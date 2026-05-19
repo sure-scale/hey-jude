@@ -1,0 +1,33 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "4005:4005"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_KEY=sk-heyjude-dev
+      - LOCAL_LLM_URL=http://host.docker.internal:11434/v1
+      - LOCAL_LLM_MODEL=qwen3.5:4b
+      - EXTERNAL_LLM_MODEL=ollama_chat/qwen3.5:4b
+      - EXTERNAL_LLM_API_BASE=http://host.docker.internal:11434
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:
