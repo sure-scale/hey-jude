@@ -16,7 +16,7 @@ from hey_jude.models import (
     HeyJudeMetadata,
 )
 from hey_jude.services.detector import detect_entities
-from hey_jude.services.mapper import reverse_map
+from hey_jude.services.mapper import reverse_map, reverse_map_text
 from hey_jude.services.router import route_completion
 from hey_jude.services.substitutor import substitute_entities
 
@@ -223,17 +223,25 @@ async def _run_gateway_completion(
         **completion_kwargs,
     )
 
+    mapping = await redis_client.get_mapping(request_id)
+    if mapping is None:
+        raise HTTPException(
+            status_code=504,
+            detail="Redis mapping expired before response could be de-anonymized",
+        )
+    reverse_mapping = {v: k for k, v in mapping.items()}
+
     for choice in external_response.get("choices", []):
         content = choice.get("message", {}).get("content", "")
-        try:
-            choice["message"]["content"] = await reverse_map(
-                content, request_id, redis_client
-            )
-        except LookupError:
-            raise HTTPException(
-                status_code=504,
-                detail="Redis mapping expired before response could be de-anonymized",
-            )
+        if content:
+            choice["message"]["content"] = reverse_map_text(content, reverse_mapping)
+
+        for tool_call in choice.get("message", {}).get("tool_calls", []) or []:
+            arguments = tool_call.get("function", {}).get("arguments", "")
+            if arguments:
+                tool_call["function"]["arguments"] = reverse_map_text(
+                    arguments, reverse_mapping
+                )
 
     external_response["heyjude_metadata"] = {
         "request_id": request_id,

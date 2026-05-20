@@ -387,6 +387,98 @@ async def test_responses_endpoint_accepts_mike_openai_shape(client):
     assert mock_route.await_args.kwargs["tool_choice"] == "auto"
 
 
+async def test_tool_call_arguments_are_deanonymized(client, app):
+    app.state.redis_client = MemoryRedis()
+    sub_result = SubstitutionResult(
+        mapping={"John Smith": "Michael Jones"},
+        reverse_mapping={"Michael Jones": "John Smith"},
+        context_descriptors={},
+        sanitized_messages=[
+            ChatMessage(role="user", content="Find cases for Michael Jones")
+        ],
+        sensitivity="low",
+        needs_clarification=False,
+        clarification_question=None,
+    )
+
+    with patch("hey_jude.routes.detect_entities", new_callable=AsyncMock) as mock_detect, patch(
+        "hey_jude.routes.substitute_entities", new_callable=AsyncMock
+    ) as mock_substitute, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_detect.return_value = [
+            DetectedEntity(
+                text="John Smith",
+                entity_type="PERSON",
+                start=15,
+                end=25,
+                score=0.95,
+            )
+        ]
+        mock_substitute.return_value = sub_result
+        mock_route.return_value = {
+            "id": "chatcmpl-toolcall",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Looking up Michael Jones.",
+                        "tool_calls": [
+                            {
+                                "id": "call_abc123",
+                                "type": "function",
+                                "function": {
+                                    "name": "search_cases",
+                                    "arguments": json.dumps(
+                                        {"client_name": "Michael Jones", "year": 2024}
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Find cases for John Smith"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_cases",
+                            "description": "Search case database",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "client_name": {"type": "string"},
+                                    "year": {"type": "integer"},
+                                },
+                            },
+                        },
+                    }
+                ],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["choices"][0]["message"]["content"] == "Looking up John Smith."
+    tool_call = data["choices"][0]["message"]["tool_calls"][0]
+    args = json.loads(tool_call["function"]["arguments"])
+    assert args["client_name"] == "John Smith"
+    assert args["year"] == 2024
+
+
 async def test_responses_stream_endpoint_emits_openai_sse(client):
     with patch("hey_jude.routes.detect_entities", new_callable=AsyncMock) as mock_detect, patch(
         "hey_jude.routes.route_completion", new_callable=AsyncMock
