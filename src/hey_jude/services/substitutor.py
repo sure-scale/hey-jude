@@ -327,6 +327,10 @@ async def substitute_entities(
     settings: Settings,
     force_local_pass: bool = False,
 ) -> SubstitutionResult:
+    placeholder_mapping = _build_placeholder_replacements(
+        entities, settings.entity_strategies
+    )
+
     deterministic_mapping = _build_deterministic_replacements(
         entities, settings.entity_strategies
     )
@@ -379,7 +383,7 @@ async def substitute_entities(
         if settings.always_full_anonymization:
             sensitivity = "high"
 
-    full_mapping = {**deterministic_mapping, **llm_mapping}
+    full_mapping = {**placeholder_mapping, **deterministic_mapping, **llm_mapping}
     reverse_mapping = {v: k for k, v in full_mapping.items()}
     context_descriptors = _sanitize_context_descriptors(
         context_descriptors,
