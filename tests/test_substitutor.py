@@ -4,6 +4,7 @@ from hey_jude.config import Settings
 from hey_jude.models import ChatMessage, DetectedEntity
 from hey_jude.services.substitutor import (
     _build_deterministic_replacements,
+    _build_placeholder_replacements,
     _build_prompt,
     _call_local_llm,
     _parse_llm_response,
@@ -32,6 +33,38 @@ def test_build_deterministic_skips_llm_entities():
     mapping = _build_deterministic_replacements(entities, strategies)
     assert "Microsoft" not in mapping
     assert "john@acme.com" in mapping
+
+
+def test_build_placeholder_replacements():
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="Jane Doe", entity_type="PERSON", start=15, end=23, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=30, end=39, score=0.9),
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=45, end=55, score=0.9),
+    ]
+    strategies = {"PERSON": "placeholder", "ORGANIZATION": "placeholder"}
+    mapping = _build_placeholder_replacements(entities, strategies)
+    assert mapping["John Smith"] == "PERSON_01"
+    assert mapping["Jane Doe"] == "PERSON_02"
+    assert mapping["Acme Corp"] == "COMPANY_01"
+    assert len(mapping) == 3
+
+
+def test_build_placeholder_skips_non_placeholder_entities():
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="john@acme.com", entity_type="EMAIL_ADDRESS", start=15, end=28, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=35, end=44, score=0.9),
+    ]
+    strategies = {
+        "PERSON": "placeholder",
+        "ORGANIZATION": "placeholder",
+        "EMAIL_ADDRESS": "deterministic",
+    }
+    mapping = _build_placeholder_replacements(entities, strategies)
+    assert "John Smith" in mapping
+    assert "Acme Corp" in mapping
+    assert "john@acme.com" not in mapping
 
 
 def test_build_prompt():

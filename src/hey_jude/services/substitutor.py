@@ -22,6 +22,28 @@ class LocalAnonymizationResponse(BaseModel):
     clarification_question: str | None = None
 
 
+_PLACEHOLDER_LABELS = {
+    "ORGANIZATION": "COMPANY",
+}
+
+
+def _build_placeholder_replacements(
+    entities: list[DetectedEntity],
+    strategies: dict[str, str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    counters: dict[str, int] = {}
+    for entity in entities:
+        if strategies.get(entity.entity_type) != "placeholder":
+            continue
+        if entity.text in mapping:
+            continue
+        label = _PLACEHOLDER_LABELS.get(entity.entity_type, entity.entity_type)
+        counters[label] = counters.get(label, 0) + 1
+        mapping[entity.text] = f"{label}_{counters[label]:02d}"
+    return mapping
+
+
 def _build_deterministic_replacements(
     entities: list[DetectedEntity],
     strategies: dict[str, str],
