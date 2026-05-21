@@ -4,12 +4,20 @@ from hey_jude.config import Settings
 from hey_jude.models import ChatMessage, DetectedEntity
 from hey_jude.services.substitutor import (
     _build_deterministic_replacements,
+    _build_placeholder_replacements,
     _build_prompt,
     _call_local_llm,
     _parse_llm_response,
     substitute_entities,
 )
 from unittest.mock import AsyncMock, patch
+
+_LLM_STRATEGIES = {
+    "PERSON": "llm",
+    "ORGANIZATION": "llm",
+    "EMAIL_ADDRESS": "deterministic",
+    "PHONE_NUMBER": "deterministic",
+}
 
 
 def test_build_deterministic_replacements():
@@ -32,6 +40,38 @@ def test_build_deterministic_skips_llm_entities():
     mapping = _build_deterministic_replacements(entities, strategies)
     assert "Microsoft" not in mapping
     assert "john@acme.com" in mapping
+
+
+def test_build_placeholder_replacements():
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="Jane Doe", entity_type="PERSON", start=15, end=23, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=30, end=39, score=0.9),
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=45, end=55, score=0.9),
+    ]
+    strategies = {"PERSON": "placeholder", "ORGANIZATION": "placeholder"}
+    mapping = _build_placeholder_replacements(entities, strategies)
+    assert mapping["John Smith"] == "PERSON_01"
+    assert mapping["Jane Doe"] == "PERSON_02"
+    assert mapping["Acme Corp"] == "COMPANY_01"
+    assert len(mapping) == 3
+
+
+def test_build_placeholder_skips_non_placeholder_entities():
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="john@acme.com", entity_type="EMAIL_ADDRESS", start=15, end=28, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=35, end=44, score=0.9),
+    ]
+    strategies = {
+        "PERSON": "placeholder",
+        "ORGANIZATION": "placeholder",
+        "EMAIL_ADDRESS": "deterministic",
+    }
+    mapping = _build_placeholder_replacements(entities, strategies)
+    assert "John Smith" in mapping
+    assert "Acme Corp" in mapping
+    assert "john@acme.com" not in mapping
 
 
 def test_build_prompt():
@@ -135,7 +175,7 @@ async def test_substitute_entities_ignores_llm_sanitized_text_by_default():
     ) as mock_local_llm:
         mock_local_llm.return_value = raw
 
-        result = await substitute_entities(messages, entities, Settings())
+        result = await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     assert result.sanitized_messages[0].content == (
         "Bring up Vertex Holdings vs Pinnacle Systems IP cases around Photogram"
@@ -180,7 +220,7 @@ async def test_substitute_entities_preserves_json_shape_while_replacing_values()
     ) as mock_local_llm:
         mock_local_llm.return_value = raw
 
-        result = await substitute_entities(messages, entities, Settings())
+        result = await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     payload = json.loads(result.sanitized_messages[0].content)
     assert payload == {
@@ -221,7 +261,7 @@ async def test_substitute_entities_sanitizes_context_descriptor_keys_and_values(
     ) as mock_local_llm:
         mock_local_llm.return_value = raw
 
-        result = await substitute_entities(messages, entities, Settings())
+        result = await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     descriptor_text = json.dumps(result.context_descriptors)
     assert "Nick Watson" not in descriptor_text
@@ -268,7 +308,7 @@ async def test_substitute_entities_accepts_list_context_descriptors_from_local_l
     ) as mock_local_llm:
         mock_local_llm.return_value = raw
 
-        result = await substitute_entities(messages, entities, Settings())
+        result = await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     assert result.context_descriptors == {
         "Alex Mercer": "individual professional",
@@ -315,7 +355,7 @@ async def test_substitute_entities_retries_invalid_llm_mapping_contract():
     ) as mock_local_llm:
         mock_local_llm.side_effect = [invalid, valid]
 
-        result = await substitute_entities(messages, entities, Settings())
+        result = await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     assert mock_local_llm.await_count == 2
     assert result.mapping == {
@@ -351,7 +391,7 @@ async def test_substitute_entities_rejects_mapping_that_leaks_original_text_afte
         mock_local_llm.return_value = leaking
 
         with pytest.raises(ValueError, match="Local LLM returned invalid anonymization contract"):
-            await substitute_entities(messages, entities, Settings())
+            await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
 
     assert mock_local_llm.await_count == 2
 
@@ -393,4 +433,102 @@ async def test_substitute_entities_rejects_json_shape_mismatch_before_routing():
         })
 
         with pytest.raises(ValueError, match="Sanitized message structure mismatch"):
-            await substitute_entities(messages, entities, Settings())
+            await substitute_entities(messages, entities, Settings(entity_strategies=_LLM_STRATEGIES))
+
+
+async def test_substitute_entities_placeholder_only_skips_llm_call():
+    messages = [
+        ChatMessage(role="user", content="John Smith works at Acme Corp")
+    ]
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=20, end=29, score=0.9),
+    ]
+    placeholder_settings = Settings(
+        entity_strategies={
+            "PERSON": "placeholder",
+            "ORGANIZATION": "placeholder",
+        }
+    )
+
+    with patch(
+        "hey_jude.services.substitutor._call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_local_llm:
+        result = await substitute_entities(messages, entities, placeholder_settings)
+
+    mock_local_llm.assert_not_awaited()
+    assert result.mapping == {"John Smith": "PERSON_01", "Acme Corp": "COMPANY_01"}
+    assert result.sanitized_messages[0].content == "PERSON_01 works at COMPANY_01"
+    assert result.sensitivity == "low"
+    assert result.context_descriptors == {}
+    assert result.needs_clarification is False
+
+
+async def test_substitute_entities_mixed_placeholder_and_deterministic():
+    messages = [
+        ChatMessage(role="user", content="John Smith's email is john@acme.com")
+    ]
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="john@acme.com", entity_type="EMAIL_ADDRESS", start=21, end=34, score=0.9),
+    ]
+    mixed_settings = Settings(
+        entity_strategies={
+            "PERSON": "placeholder",
+            "EMAIL_ADDRESS": "deterministic",
+        }
+    )
+
+    with patch(
+        "hey_jude.services.substitutor._call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_local_llm:
+        result = await substitute_entities(messages, entities, mixed_settings)
+
+    mock_local_llm.assert_not_awaited()
+    assert result.mapping["John Smith"] == "PERSON_01"
+    assert result.mapping["john@acme.com"] == "user_1@example.com"
+    assert result.sanitized_messages[0].content == (
+        "PERSON_01's email is user_1@example.com"
+    )
+
+
+async def test_substitute_entities_mixed_placeholder_and_llm():
+    raw = json.dumps({
+        "sensitivity": "high",
+        "reasoning": "Named relationship could identify the person.",
+        "mapping": {"Acme Corp": "TechNova Inc."},
+        "context_descriptors": {"TechNova Inc.": "technology company"},
+        "sanitized_text": "",
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
+    messages = [
+        ChatMessage(role="user", content="John Smith works at Acme Corp")
+    ]
+    entities = [
+        DetectedEntity(text="John Smith", entity_type="PERSON", start=0, end=10, score=0.9),
+        DetectedEntity(text="Acme Corp", entity_type="ORGANIZATION", start=20, end=29, score=0.9),
+    ]
+    mixed_settings = Settings(
+        entity_strategies={
+            "PERSON": "placeholder",
+            "ORGANIZATION": "llm",
+        }
+    )
+
+    with patch(
+        "hey_jude.services.substitutor._call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_local_llm:
+        mock_local_llm.return_value = raw
+        result = await substitute_entities(messages, entities, mixed_settings)
+
+    mock_local_llm.assert_awaited_once()
+    assert result.mapping["John Smith"] == "PERSON_01"
+    assert result.mapping["Acme Corp"] == "TechNova Inc."
+    assert result.sanitized_messages[0].content == (
+        "PERSON_01 works at TechNova Inc."
+    )
+    assert result.sensitivity == "high"

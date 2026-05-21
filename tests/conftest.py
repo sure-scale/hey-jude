@@ -10,7 +10,7 @@ os.environ.setdefault("EXTERNAL_LLM_MODEL", "ollama_chat/qwen3.5:4b")
 os.environ.setdefault("EXTERNAL_LLM_API_BASE", "http://localhost:11434")
 os.environ.setdefault(
     "ENTITY_STRATEGIES",
-    '{"PERSON":"llm","ORGANIZATION":"llm","EMAIL_ADDRESS":"deterministic","PHONE_NUMBER":"deterministic"}',
+    '{"PERSON":"placeholder","ORGANIZATION":"placeholder","EMAIL_ADDRESS":"deterministic","PHONE_NUMBER":"deterministic"}',
 )
 
 from hey_jude.config import Settings

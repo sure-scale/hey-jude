@@ -22,6 +22,28 @@ class LocalAnonymizationResponse(BaseModel):
     clarification_question: str | None = None
 
 
+_PLACEHOLDER_LABELS = {
+    "ORGANIZATION": "COMPANY",
+}
+
+
+def _build_placeholder_replacements(
+    entities: list[DetectedEntity],
+    strategies: dict[str, str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    counters: dict[str, int] = {}
+    for entity in entities:
+        if strategies.get(entity.entity_type) != "placeholder":
+            continue
+        if entity.text in mapping:
+            continue
+        label = _PLACEHOLDER_LABELS.get(entity.entity_type, entity.entity_type)
+        counters[label] = counters.get(label, 0) + 1
+        mapping[entity.text] = f"{label}_{counters[label]:02d}"
+    return mapping
+
+
 def _build_deterministic_replacements(
     entities: list[DetectedEntity],
     strategies: dict[str, str],
@@ -305,6 +327,10 @@ async def substitute_entities(
     settings: Settings,
     force_local_pass: bool = False,
 ) -> SubstitutionResult:
+    placeholder_mapping = _build_placeholder_replacements(
+        entities, settings.entity_strategies
+    )
+
     deterministic_mapping = _build_deterministic_replacements(
         entities, settings.entity_strategies
     )
@@ -357,7 +383,7 @@ async def substitute_entities(
         if settings.always_full_anonymization:
             sensitivity = "high"
 
-    full_mapping = {**deterministic_mapping, **llm_mapping}
+    full_mapping = {**placeholder_mapping, **deterministic_mapping, **llm_mapping}
     reverse_mapping = {v: k for k, v in full_mapping.items()}
     context_descriptors = _sanitize_context_descriptors(
         context_descriptors,
