@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     )
     entity_strategies: dict[str, str] = Field(
         default={
-            "PERSON": "llm",
-            "ORGANIZATION": "llm",
+            "PERSON": "placeholder",
+            "ORGANIZATION": "placeholder",
             "EMAIL_ADDRESS": "deterministic",
             "PHONE_NUMBER": "deterministic",
         }
