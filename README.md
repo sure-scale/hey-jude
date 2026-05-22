@@ -4,7 +4,7 @@
 
 # Hey Jude
 
-**Risk-mitigating pseudonymization gateway for legal LLM workflows.**
+**Privacy gateway for legal LLM workflows.**
 
 <p align="left">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white">
@@ -14,19 +14,33 @@
   <img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-111827?style=flat-square">
 </p>
 
-Hey Jude is an open-source mitigation proxy designed to reduce sensitive data exposure when using LLMs in legal workflows. It detects and pseudonymizes common PII, organization names, and selected sensitive terms before a prompt is routed onward, then attempts to restore the original details in the response.
+Hey Jude sits between your app and your LLM provider. It strips PII from prompts before they leave your environment, then restores the original details in the response. Your users see real names; the cloud LLM never does.
 
-This tool is a helper layer for data minimization. It does not guarantee complete detection of all sensitive information and should be used as part of a broader confidentiality strategy.
+It uses a local LLM to understand context — so legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses get replaced with semantic placeholders like `INVESTMENT_BANK_01` or `PERSON_02`. A Presidio-based safety net catches anything the LLM misses.
+
+This is a helper layer for data minimization, not a guarantee. Use it as part of a broader confidentiality strategy.
+
+---
+
+## How It Works
+
+1. Your app sends a chat completion request to Hey Jude (OpenAI-compatible API).
+2. A local LLM analyzes the text and identifies real PII vs. legal/structural terms.
+3. PII gets replaced with semantic placeholders. Legal defined terms are kept.
+4. A Presidio safety net scans the result for anything the LLM missed.
+5. The sanitized prompt is forwarded to your chosen LLM provider.
+6. The response comes back, placeholders are swapped for originals, and your app gets a normal-looking reply.
 
 ---
 
 ## Why It Exists
 
-*   **Smart pseudonymization:** Replaces people, organizations, email addresses, and phone numbers with safer synthetic values.
-*   **Local anonymization model:** Uses a local OpenAI-compatible endpoint, usually Ollama, before anything is routed onward.
-*   **Drop-in API shape:** Exposes OpenAI, Anthropic, and Gemini-compatible endpoints so existing SDK clients can point at the gateway.
-*   **Default local demo:** Runs without a cloud LLM key by using Ollama as both the anonymization model and the demo destination.
-*   **External routing when ready:** Advanced users can route anonymized prompts to OpenAI, Anthropic, Gemini, Azure, or any LiteLLM-compatible provider.
+*   **Context-aware anonymization:** A local LLM understands that "Goldman Sachs" is PII but "the Purchaser" is a legal term — something regex and NER can't do reliably.
+*   **Semantic placeholders:** `INVESTMENT_BANK_01`, not `ORGANIZATION_01`. The downstream LLM keeps enough context to reason well.
+*   **Safety net:** Presidio runs after the LLM as a second pass. Configurable as `warn` (auto-fix), `strict` (reject), or `off`.
+*   **Drop-in API:** Exposes OpenAI, Anthropic, and Gemini-compatible endpoints. Point existing SDKs at the gateway.
+*   **Fully local by default:** Runs without cloud keys using Ollama for both anonymization and demo responses.
+*   **Cloud routing when ready:** Route anonymized prompts to OpenAI, Anthropic, Gemini, Azure, or any LiteLLM-compatible provider.
 
 ---
 
@@ -54,7 +68,7 @@ The gateway will run at `http://localhost:4005`.
 In another terminal:
 
 ```bash
-python3 scripts/test_gateway.py
+python3 tests/e2e/test_gateway.py
 ```
 
 The default setup is fully local: Redis runs in Docker, and Ollama runs on your host machine.
@@ -63,16 +77,18 @@ The default setup is fully local: Redis runs in Docker, and Ollama runs on your 
 
 ## Default Configuration
 
-The checked-in defaults are intended to work for most new users without model or provider selection.
+The defaults work out of the box for most users.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `REDIS_URL` | `redis://localhost:6379/0` | Temporary mapping memory |
+| `REDIS_URL` | `redis://localhost:6379/0` | Temporary mapping storage |
 | `API_KEY` | `sk-heyjude-dev` | Gateway authentication |
 | `LOCAL_LLM_URL` | `http://localhost:11434/v1` | Local anonymization endpoint |
 | `LOCAL_LLM_MODEL` | `qwen3.5:4b` | Local anonymization model |
-| `EXTERNAL_LLM_MODEL` | `ollama_chat/qwen3.5:4b` | Demo destination model via LiteLLM |
+| `EXTERNAL_LLM_MODEL` | `ollama_chat/qwen3.5:4b` | Destination model via LiteLLM |
 | `EXTERNAL_LLM_API_BASE` | `http://localhost:11434` | LiteLLM API base for Ollama |
+| `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
+| `SAFETY_NET_STRICTNESS` | `warn` | `warn` (auto-fix), `strict` (reject), or `off` |
 
 When running through Docker Compose, the service automatically uses `host.docker.internal` so the container can reach Ollama on your Mac.
 
