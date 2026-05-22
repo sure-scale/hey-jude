@@ -16,6 +16,9 @@ def _is_own_placeholder(text: str, mapping_values: set[str]) -> bool:
         return True
     if _PLACEHOLDER_PATTERN.match(text):
         return True
+    for value in mapping_values:
+        if text in value and _PLACEHOLDER_PATTERN.match(value):
+            return True
     return False
 
 

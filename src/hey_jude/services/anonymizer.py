@@ -35,7 +35,7 @@ def validate_llm_anonymization_response(
 
         if replacement:
             original = item.get("text", "")
-            if original.casefold() in replacement.casefold():
+            if len(original) >= 3 and original.casefold() in replacement.casefold():
                 raise ValueError(
                     f"Replacement for {original!r} leaks original text: {replacement!r}"
                 )
@@ -118,7 +118,8 @@ async def anonymize_messages(
             raise last_error or ValueError("LLM returned invalid anonymization response")
 
         new_mapping = build_mapping_from_entities(entities)
-        accumulated_mapping.update(new_mapping)
+        for key, value in new_mapping.items():
+            accumulated_mapping.setdefault(key, value)
         all_entities.extend(entities)
         all_descriptors.update(descriptors)
         if sensitivity == "high":

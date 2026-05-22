@@ -34,6 +34,18 @@ def test_apply_mapping_preserving_text_structure_plain_text():
     assert result == "PERSON_01 works here"
 
 
+def test_apply_mapping_to_text_respects_word_boundaries():
+    mapping = {"John": "PERSON_01"}
+    result = apply_mapping_to_text("Johnson called John", mapping)
+    assert result == "Johnson called PERSON_01"
+
+
+def test_apply_mapping_to_text_no_replacement_chain():
+    mapping = {"ABC": "DEF_01", "DEF": "GHI_01"}
+    result = apply_mapping_to_text("ABC and DEF", mapping)
+    assert result == "DEF_01 and GHI_01"
+
+
 def test_apply_mapping_preserving_text_structure_json():
     original = json.dumps({"name": "John", "age": 30})
     result = apply_mapping_preserving_text_structure(original, {"John": "PERSON_01"})
