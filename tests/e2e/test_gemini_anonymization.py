@@ -12,12 +12,16 @@ Usage:
 """
 
 import asyncio
+import functools
 import json
 import os
 import sys
 from pathlib import Path
 
 import httpx
+
+# Force unbuffered output so progress streams live
+print = functools.partial(print, flush=True)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -34,17 +38,18 @@ GEMINI_EVAL_MODEL = os.environ.get("GEMINI_EVAL_MODEL", "gemini-pro-latest")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 
-async def call_gemini(messages: list[dict], *, model: str = GEMINI_MODEL) -> str:
+async def call_gemini(messages: list[dict], *, model: str = GEMINI_MODEL, max_tokens: int = 4096) -> str:
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.3,
+        "max_tokens": max_tokens,
     }
     headers = {
         "Authorization": f"Bearer {GEMINI_API_KEY}",
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(GEMINI_URL, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()

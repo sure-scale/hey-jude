@@ -38,7 +38,7 @@ async def _call_ollama_native_llm(prompt: str, settings: Settings, url: str) -> 
         "think": False,
         "options": {
             "temperature": 0.3,
-            "num_predict": 1024,
+            "num_predict": 4096,
         },
     }
     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
@@ -58,12 +58,13 @@ async def call_local_llm(prompt: str, settings: Settings) -> str:
         "model": settings.local_llm_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
+        "max_tokens": 4096,
     }
     headers = {}
     if settings.local_llm_api_key:
         headers["api-key"] = settings.local_llm_api_key
         headers["Authorization"] = f"Bearer {settings.local_llm_api_key}"
-    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
