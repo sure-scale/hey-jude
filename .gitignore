@@ -16,3 +16,4 @@ venv/
 .coverage
 htmlcov/
 docs/superpowers/
+tests/fixtures/legal_docs/*.txt

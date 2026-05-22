@@ -59,8 +59,12 @@ async def call_local_llm(prompt: str, settings: Settings) -> str:
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
     }
+    headers = {}
+    if settings.local_llm_api_key:
+        headers["api-key"] = settings.local_llm_api_key
+        headers["Authorization"] = f"Bearer {settings.local_llm_api_key}"
     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
