@@ -1,6 +1,8 @@
 import dotenv
 dotenv.load_dotenv()
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -40,6 +42,10 @@ class Settings(BaseSettings):
     passthrough_system_messages: bool = False
     max_context_window: int = 500
     allow_clarification_requests: bool = True
+
+    anonymization_mode: Literal["llm", "mechanical"] = "llm"
+    safety_net_strictness: Literal["off", "warn", "strict"] = "warn"
+    anonymization_prompt_path: str = "prompts/anonymize.txt"
 
 
 settings = Settings()

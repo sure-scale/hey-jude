@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import ASGITransport, AsyncClient
@@ -14,6 +15,7 @@ def test_settings():
         redis_url="redis://localhost:6379/1",
         redis_ttl_seconds=60,
         api_key="sk-test-key",
+        anonymization_mode="mechanical",
     )
 
 
@@ -918,3 +920,162 @@ async def test_clarification_followup_retrieves_original_context(client, app):
         "Tell me about Microsoft",
         "The licensing dispute.",
     ]
+
+
+async def test_llm_mode_anonymization_pipeline(client, app):
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "llm"
+    app.state.settings.safety_net_strictness = "off"
+    app.state.anonymization_prompt = Path("prompts/anonymize.txt").read_text()
+
+    llm_response = json.dumps({
+        "entities_found": [
+            {"text": "Microsoft", "type": "ORGANIZATION", "action": "replace",
+             "replacement": "SOFTWARE_COMPANY_01", "reason": "real company"},
+            {"text": "Purchaser", "type": "DEFINED_TERM", "action": "keep",
+             "replacement": None, "reason": "legal defined term"},
+        ],
+        "context_descriptors": {"SOFTWARE_COMPANY_01": "tech company"},
+        "sensitivity": "low",
+    })
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_llm.return_value = llm_response
+        mock_route.return_value = {
+            "id": "chatcmpl-llm-mode",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "The SOFTWARE_COMPANY_01 breach claim by the Purchaser is valid.",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "The Purchaser sued Microsoft for breach"}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Microsoft" in data["choices"][0]["message"]["content"]
+    assert "Purchaser" in data["choices"][0]["message"]["content"]
+    assert "SOFTWARE_COMPANY_01" not in data["choices"][0]["message"]["content"]
+
+    routed = mock_route.await_args.kwargs["messages"]
+    assert "SOFTWARE_COMPANY_01" in routed[0].content
+    assert "Purchaser" in routed[0].content
+
+
+async def test_llm_mode_strict_safety_net_blocks(client, app):
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "llm"
+    app.state.settings.safety_net_strictness = "strict"
+    app.state.anonymization_prompt = Path("prompts/anonymize.txt").read_text()
+
+    llm_response = json.dumps({
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    })
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm, patch(
+        "hey_jude.services.safety_net.detect_entities",
+        new_callable=AsyncMock,
+    ) as mock_detect:
+        mock_llm.return_value = llm_response
+        mock_detect.return_value = [
+            DetectedEntity(text="John Smith", entity_type="PERSON",
+                          start=0, end=10, score=0.9),
+        ]
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "John Smith filed a claim"}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 422
+    assert "Safety net" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_mechanical_mode_unchanged(client, app):
+    """Regression: mechanical mode produces identical results to pre-refactor behavior."""
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "mechanical"
+
+    local_llm_response = json.dumps({
+        "sensitivity": "low",
+        "reasoning": "Standard mapping.",
+        "mapping": {
+            "John Smith": "Richard Roe",
+            "Microsoft": "Pinnacle Systems",
+        },
+        "context_descriptors": {
+            "Richard Roe": "a legal professional",
+            "Pinnacle Systems": "a technology corporation",
+        },
+        "sanitized_text": "",
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
+
+    with patch(
+        "hey_jude.services.substitutor._call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_local, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_local.return_value = local_llm_response
+        mock_route.return_value = {
+            "id": "chatcmpl-mechanical",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Richard Roe at Pinnacle Systems.",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "John Smith works at Microsoft"}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "John Smith" in data["choices"][0]["message"]["content"]
+    assert "Microsoft" in data["choices"][0]["message"]["content"]
+    assert data["heyjude_metadata"]["status"] == "completed"
