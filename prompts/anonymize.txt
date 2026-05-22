@@ -1,0 +1,48 @@
+<task>
+Analyze this text and identify all entities that could be personally identifying
+information (PII). For each entity, decide the appropriate action.
+</task>
+
+<existing_mapping>
+{existing_mapping}
+</existing_mapping>
+
+<text>
+{message_text}
+</text>
+
+<instructions>
+For each entity you find, classify it and decide an action:
+
+Actions:
+- "replace": Real PII. Replace with a semantic placeholder that preserves the
+  entity's role without identifying it.
+  Examples: "Microsoft" → "SOFTWARE_COMPANY_01", "Dr. Sarah Chen" → "PERSON_01",
+  "California" → "US_WEST_COAST", "john@acme.com" → "person_01@company_01.com"
+- "keep": Not PII. Legal defined terms ("the Purchaser", "the Agreement"),
+  generic roles, or terms that are structural rather than identifying.
+- "generalize": Partially sensitive. Replace with a broader category that
+  preserves useful context. "123 Main St, San Francisco" → "URBAN_ADDRESS_01"
+
+Rules:
+1. Reuse existing mappings for consistency. If "Microsoft" already maps to
+   "SOFTWARE_COMPANY_01", use that same mapping.
+2. Semantic placeholders should reflect the entity's domain/category, not just
+   its type. "Goldman Sachs" → "INVESTMENT_BANK_01", not "COMPANY_01".
+3. Legal defined terms (Purchaser, Seller, Licensor, Agreement, etc.) are
+   almost never PII — default to "keep".
+4. Numbered placeholders must be unique per category. If PERSON_01 exists,
+   next person is PERSON_02.
+5. Assess overall sensitivity: "low" if replacements alone prevent
+   identification, "high" if structural patterns could still de-anonymize.
+
+Return ONLY a JSON object:
+{{
+  "entities_found": [
+    {{"text": "...", "type": "...", "action": "replace|keep|generalize",
+     "replacement": "...", "reason": "..."}}
+  ],
+  "context_descriptors": {{"PLACEHOLDER": "brief description"}},
+  "sensitivity": "low|high"
+}}
+</instructions>

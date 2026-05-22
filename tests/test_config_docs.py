@@ -1,7 +1,36 @@
 from pathlib import Path
 
+from hey_jude.config import Settings
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_anonymization_mode_defaults_to_llm():
+    s = Settings()
+    assert s.anonymization_mode == "llm"
+
+
+def test_safety_net_strictness_defaults_to_warn():
+    s = Settings()
+    assert s.safety_net_strictness == "warn"
+
+
+def test_anonymization_prompt_path_default():
+    s = Settings()
+    assert s.anonymization_prompt_path == "prompts/anonymize.txt"
+
+
+def test_prompt_template_renders():
+    template = Path("prompts/anonymize.txt").read_text()
+    rendered = template.format(
+        existing_mapping='{"Microsoft": "SOFTWARE_COMPANY_01"}',
+        message_text="John Smith works at Microsoft.",
+    )
+    assert "John Smith works at Microsoft." in rendered
+    assert '"Microsoft": "SOFTWARE_COMPANY_01"' in rendered
+    assert "{existing_mapping}" not in rendered
+    assert "{message_text}" not in rendered
 
 
 def test_docker_compose_uses_settings_environment_names():

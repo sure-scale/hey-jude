@@ -41,5 +41,9 @@ class Settings(BaseSettings):
     max_context_window: int = 500
     allow_clarification_requests: bool = True
 
+    anonymization_mode: str = "llm"
+    safety_net_strictness: str = "warn"
+    anonymization_prompt_path: str = "prompts/anonymize.txt"
+
 
 settings = Settings()
