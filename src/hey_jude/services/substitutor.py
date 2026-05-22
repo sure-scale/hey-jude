@@ -1,13 +1,14 @@
 import json
-import re
 from typing import Literal
-from urllib.parse import urlparse
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hey_jude.config import Settings
 from hey_jude.models import ChatMessage, DetectedEntity, SubstitutionResult
+from hey_jude.services.llm_client import (
+    call_local_llm as _call_local_llm,
+    parse_llm_response as _parse_llm_response,
+)
 from hey_jude.services.text import (
     apply_mapping_to_text as _apply_mapping_to_text,
     apply_mapping_preserving_text_structure as _apply_mapping_preserving_text_structure,
@@ -97,17 +98,6 @@ Analyze this legal professional's query for sensitive entity handling.
 </instructions>"""
 
 
-def _parse_llm_response(raw: str) -> dict:
-    text = raw.strip()
-    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if fence_match:
-        text = fence_match.group(1).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Failed to parse local LLM response as JSON: {e}") from e
-
-
 def _normalize_context_descriptors(parsed: dict) -> dict:
     descriptors = parsed.get("context_descriptors")
     if isinstance(descriptors, dict):
@@ -179,54 +169,6 @@ def _build_retry_prompt(prompt: str, error: ValueError) -> str:
         + "Replacement strings must not contain the original sensitive text. "
         + f"Validation error: {error}"
     )
-
-
-def _ollama_native_chat_url(local_llm_url: str) -> str | None:
-    parsed = urlparse(local_llm_url)
-    if parsed.port != 11434:
-        return None
-
-    path = parsed.path.rstrip("/")
-    if path not in {"", "/v1"}:
-        return None
-
-    return f"{parsed.scheme}://{parsed.netloc}/api/chat"
-
-
-async def _call_ollama_native_llm(prompt: str, settings: Settings, url: str) -> str:
-    payload = {
-        "model": settings.local_llm_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "think": False,
-        "options": {
-            "temperature": 0.3,
-            "num_predict": 1024,
-        },
-    }
-    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["message"]["content"]
-
-
-async def _call_local_llm(prompt: str, settings: Settings) -> str:
-    ollama_url = _ollama_native_chat_url(settings.local_llm_url)
-    if ollama_url:
-        return await _call_ollama_native_llm(prompt, settings, ollama_url)
-
-    url = f"{settings.local_llm_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": settings.local_llm_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-    }
-    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
 
 
 def _sanitize_context_descriptors(
