@@ -75,3 +75,29 @@ class SubstitutionResult:
     sensitivity: str
     needs_clarification: bool
     clarification_question: str | None = None
+
+
+@dataclass
+class FoundEntity:
+    text: str
+    entity_type: str
+    action: str
+    replacement: str | None
+    reason: str | None
+
+
+@dataclass
+class AnonymizationResult:
+    mapping: dict[str, str]
+    reverse_mapping: dict[str, str]
+    context_descriptors: dict[str, str]
+    sanitized_messages: list[ChatMessage]
+    sensitivity: str
+    entities_found: list[FoundEntity]
+
+
+@dataclass
+class SafetyNetResult:
+    passed: bool
+    leaked_entities: list[DetectedEntity]
+    auto_replaced: int

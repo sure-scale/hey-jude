@@ -1,11 +1,14 @@
 from hey_jude.models import (
+    AnonymizationResult,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatMessage,
     Choice,
     ChoiceMessage,
     DetectedEntity,
+    FoundEntity,
     HeyJudeMetadata,
+    SafetyNetResult,
     SubstitutionResult,
     Usage,
 )
@@ -90,3 +93,65 @@ def test_substitution_result():
     )
     assert result.mapping["Microsoft"] == "Pinnacle Systems"
     assert result.reverse_mapping["Pinnacle Systems"] == "Microsoft"
+
+
+def test_found_entity_replace():
+    e = FoundEntity(
+        text="Microsoft",
+        entity_type="ORGANIZATION",
+        action="replace",
+        replacement="SOFTWARE_COMPANY_01",
+        reason="real company",
+    )
+    assert e.action == "replace"
+    assert e.replacement == "SOFTWARE_COMPANY_01"
+
+
+def test_found_entity_keep():
+    e = FoundEntity(
+        text="Purchaser",
+        entity_type="DEFINED_TERM",
+        action="keep",
+        replacement=None,
+        reason="legal defined term",
+    )
+    assert e.action == "keep"
+    assert e.replacement is None
+
+
+def test_anonymization_result():
+    result = AnonymizationResult(
+        mapping={"Microsoft": "SOFTWARE_COMPANY_01"},
+        reverse_mapping={"SOFTWARE_COMPANY_01": "Microsoft"},
+        context_descriptors={"SOFTWARE_COMPANY_01": "tech company"},
+        sanitized_messages=[ChatMessage(role="user", content="SOFTWARE_COMPANY_01")],
+        sensitivity="low",
+        entities_found=[
+            FoundEntity(
+                text="Microsoft",
+                entity_type="ORGANIZATION",
+                action="replace",
+                replacement="SOFTWARE_COMPANY_01",
+                reason="real company",
+            )
+        ],
+    )
+    assert result.mapping["Microsoft"] == "SOFTWARE_COMPANY_01"
+    assert len(result.entities_found) == 1
+
+
+def test_safety_net_result_passed():
+    result = SafetyNetResult(passed=True, leaked_entities=[], auto_replaced=0)
+    assert result.passed is True
+
+
+def test_safety_net_result_failed():
+    result = SafetyNetResult(
+        passed=False,
+        leaked_entities=[
+            DetectedEntity(text="John", entity_type="PERSON", start=0, end=4, score=0.9)
+        ],
+        auto_replaced=0,
+    )
+    assert result.passed is False
+    assert len(result.leaked_entities) == 1
