@@ -23,6 +23,7 @@ def test_settings():
         redis_url="redis://localhost:6379/1",
         redis_ttl_seconds=10,
         api_key="sk-test-key",
+        anonymization_mode="mechanical",
     )
 
 

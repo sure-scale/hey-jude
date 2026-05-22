@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -11,6 +12,11 @@ from hey_jude.routes import router
 async def lifespan(app: FastAPI):
     app.state.redis_client = RedisClient(app.state.settings.redis_url)
     await app.state.redis_client.connect()
+    prompt_path = Path(app.state.settings.anonymization_prompt_path)
+    if prompt_path.exists():
+        app.state.anonymization_prompt = prompt_path.read_text()
+    else:
+        app.state.anonymization_prompt = None
     yield
     await app.state.redis_client.close()
 

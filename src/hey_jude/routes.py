@@ -14,10 +14,13 @@ from hey_jude.models import (
     Choice,
     ChoiceMessage,
     HeyJudeMetadata,
+    SubstitutionResult,
 )
+from hey_jude.services.anonymizer import anonymize_messages
 from hey_jude.services.detector import detect_entities
 from hey_jude.services.mapper import reverse_map, reverse_map_text
 from hey_jude.services.router import route_completion
+from hey_jude.services.safety_net import safety_net_check
 from hey_jude.services.substitutor import substitute_entities
 
 router = APIRouter()
@@ -152,13 +155,6 @@ async def _run_gateway_completion(
     request_id = str(uuid.uuid4())
     messages = await _messages_with_clarification_context(body, redis_client)
 
-    all_entities = []
-    for msg in messages:
-        if msg.role == "system" and settings.passthrough_system_messages:
-            continue
-        entities = await detect_entities(msg.content, settings)
-        all_entities.extend(entities)
-
     try:
         redis_ok = await redis_client.health_check()
         if not redis_ok:
@@ -168,16 +164,61 @@ async def _run_gateway_completion(
     except Exception:
         raise HTTPException(status_code=503, detail="Redis unavailable")
 
-    try:
-        sub_result = await substitute_entities(
-            messages, all_entities, settings, force_local_pass=True
+    if settings.anonymization_mode == "llm":
+        prompt_template = getattr(request.app.state, "anonymization_prompt", None)
+
+        try:
+            anon_result = await anonymize_messages(
+                messages, settings, prompt_template=prompt_template,
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=503, detail="Local LLM unavailable")
+        except ValueError:
+            raise HTTPException(
+                status_code=502, detail="Anonymization validation failed"
+            )
+
+        if settings.safety_net_strictness != "off":
+            sn_result = await safety_net_check(
+                anon_result.sanitized_messages, anon_result.mapping, settings,
+            )
+            if not sn_result.passed:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Safety net: PII detected in anonymized output",
+                )
+
+        sub_result = SubstitutionResult(
+            mapping=anon_result.mapping,
+            reverse_mapping=anon_result.reverse_mapping,
+            context_descriptors=anon_result.context_descriptors,
+            sanitized_messages=anon_result.sanitized_messages,
+            sensitivity=anon_result.sensitivity,
+            needs_clarification=False,
+            clarification_question=None,
         )
-    except httpx.RequestError:
-        raise HTTPException(status_code=503, detail="Local LLM unavailable")
-    except ValueError:
-        raise HTTPException(
-            status_code=502, detail="Anonymization validation failed"
-        )
+        all_entities_count = len([
+            e for e in anon_result.entities_found if e.action != "keep"
+        ])
+    else:
+        all_entities = []
+        for msg in messages:
+            if msg.role == "system" and settings.passthrough_system_messages:
+                continue
+            entities = await detect_entities(msg.content, settings)
+            all_entities.extend(entities)
+
+        try:
+            sub_result = await substitute_entities(
+                messages, all_entities, settings, force_local_pass=True
+            )
+        except httpx.RequestError:
+            raise HTTPException(status_code=503, detail="Local LLM unavailable")
+        except ValueError:
+            raise HTTPException(
+                status_code=502, detail="Anonymization validation failed"
+            )
+        all_entities_count = len(all_entities)
 
     if sub_result.needs_clarification and settings.allow_clarification_requests:
         await redis_client.store_request(
@@ -202,7 +243,7 @@ async def _run_gateway_completion(
             ],
             heyjude_metadata=HeyJudeMetadata(
                 request_id=request_id,
-                entities_detected=len(all_entities),
+                entities_detected=all_entities_count,
                 sensitivity=sub_result.sensitivity,
                 status="clarification_needed",
             ),
@@ -245,7 +286,7 @@ async def _run_gateway_completion(
 
     external_response["heyjude_metadata"] = {
         "request_id": request_id,
-        "entities_detected": len(all_entities),
+        "entities_detected": all_entities_count,
         "sensitivity": sub_result.sensitivity,
         "status": "completed",
     }
