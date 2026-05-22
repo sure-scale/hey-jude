@@ -1018,3 +1018,64 @@ async def test_llm_mode_strict_safety_net_blocks(client, app):
 
     assert resp.status_code == 422
     assert "Safety net" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_mechanical_mode_unchanged(client, app):
+    """Regression: mechanical mode produces identical results to pre-refactor behavior."""
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "mechanical"
+
+    local_llm_response = json.dumps({
+        "sensitivity": "low",
+        "reasoning": "Standard mapping.",
+        "mapping": {
+            "John Smith": "Richard Roe",
+            "Microsoft": "Pinnacle Systems",
+        },
+        "context_descriptors": {
+            "Richard Roe": "a legal professional",
+            "Pinnacle Systems": "a technology corporation",
+        },
+        "sanitized_text": "",
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
+
+    with patch(
+        "hey_jude.services.substitutor._call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_local, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_local.return_value = local_llm_response
+        mock_route.return_value = {
+            "id": "chatcmpl-mechanical",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Richard Roe at Pinnacle Systems.",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "John Smith works at Microsoft"}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "John Smith" in data["choices"][0]["message"]["content"]
+    assert "Microsoft" in data["choices"][0]["message"]["content"]
+    assert data["heyjude_metadata"]["status"] == "completed"
