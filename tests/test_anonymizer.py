@@ -255,3 +255,142 @@ async def test_anonymize_messages_with_existing_mapping():
     assert result.mapping["John Smith"] == "PERSON_01"
     prompt_sent = mock_llm.call_args.args[0]
     assert "SOFTWARE_COMPANY_01" in prompt_sent
+
+
+def test_validate_response_short_entity_leak_allowed():
+    raw = {
+        "entities_found": [
+            {"text": "an", "type": "MISC", "action": "replace",
+             "replacement": "URBAN_ADDRESS_01", "reason": "short token"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    entities, _, _ = validate_llm_anonymization_response(raw)
+    assert entities[0].replacement == "URBAN_ADDRESS_01"
+
+
+def test_validate_response_generalize_missing_replacement():
+    raw = {
+        "entities_found": [
+            {"text": "California", "type": "LOCATION", "action": "generalize",
+             "replacement": None, "reason": ""},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    with pytest.raises(ValueError, match="missing replacement"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_empty_entities():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    entities, descriptors, sensitivity = validate_llm_anonymization_response(raw)
+    assert entities == []
+    assert sensitivity == "low"
+
+
+def test_validate_response_defaults_missing_fields():
+    raw = {}
+    entities, descriptors, sensitivity = validate_llm_anonymization_response(raw)
+    assert entities == []
+    assert descriptors == {}
+    assert sensitivity == "low"
+
+
+def test_build_mapping_all_kept():
+    entities = [
+        FoundEntity(text="Purchaser", entity_type="DEFINED_TERM",
+                    action="keep", replacement=None, reason=""),
+        FoundEntity(text="Agreement", entity_type="DEFINED_TERM",
+                    action="keep", replacement=None, reason=""),
+    ]
+    assert build_mapping_from_entities(entities) == {}
+
+
+def test_render_prompt_with_empty_mapping():
+    template = Path("prompts/anonymize.txt").read_text()
+    rendered = render_prompt(template, "Hello world", {})
+    assert "Hello world" in rendered
+    assert "{}" in rendered
+
+
+def test_render_prompt_with_braces_in_message():
+    template = Path("prompts/anonymize.txt").read_text()
+    rendered = render_prompt(template, 'Return {"key": "value"}', {})
+    assert '{"key": "value"}' in rendered
+
+
+async def test_anonymize_messages_preserves_first_mapping_on_conflict():
+    response_1 = _make_llm_response([
+        {"text": "Microsoft", "type": "ORGANIZATION", "action": "replace",
+         "replacement": "SOFTWARE_COMPANY_01", "reason": ""},
+    ])
+    response_2 = _make_llm_response([
+        {"text": "Microsoft", "type": "ORGANIZATION", "action": "replace",
+         "replacement": "TECH_CORP_99", "reason": ""},
+    ])
+
+    messages = [
+        ChatMessage(role="user", content="Microsoft is big"),
+        ChatMessage(role="user", content="Microsoft is huge"),
+    ]
+
+    template = Path("prompts/anonymize.txt").read_text()
+    settings = Settings(anonymization_mode="llm")
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.side_effect = [response_1, response_2]
+        result = await anonymize_messages(messages, settings, prompt_template=template)
+
+    assert result.mapping["Microsoft"] == "SOFTWARE_COMPANY_01"
+
+
+async def test_anonymize_messages_high_sensitivity_propagates():
+    response_1 = _make_llm_response([], sensitivity="low")
+    response_2 = _make_llm_response([], sensitivity="high")
+
+    messages = [
+        ChatMessage(role="user", content="Hello"),
+        ChatMessage(role="user", content="World"),
+    ]
+
+    template = Path("prompts/anonymize.txt").read_text()
+    settings = Settings(anonymization_mode="llm")
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.side_effect = [response_1, response_2]
+        result = await anonymize_messages(messages, settings, prompt_template=template)
+
+    assert result.sensitivity == "high"
+
+
+async def test_anonymize_messages_exhausted_retries_raises():
+    invalid = _make_llm_response([
+        {"text": "X", "type": "PERSON", "action": "replace",
+         "replacement": None, "reason": ""},
+    ])
+
+    messages = [ChatMessage(role="user", content="X")]
+    template = Path("prompts/anonymize.txt").read_text()
+    settings = Settings(anonymization_mode="llm")
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = invalid
+        with pytest.raises(ValueError, match="missing replacement"):
+            await anonymize_messages(messages, settings, prompt_template=template)
+
+    assert mock_llm.await_count == 2
