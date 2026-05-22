@@ -190,7 +190,7 @@ async def _run_gateway_completion(
 
         sub_result = SubstitutionResult(
             mapping=anon_result.mapping,
-            reverse_mapping=anon_result.reverse_mapping,
+            reverse_mapping={v: k for k, v in anon_result.mapping.items()},
             context_descriptors=anon_result.context_descriptors,
             sanitized_messages=anon_result.sanitized_messages,
             sensitivity=anon_result.sensitivity,

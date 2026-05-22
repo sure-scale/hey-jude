@@ -12,9 +12,8 @@ _PLACEHOLDER_PATTERN = re.compile(r"^[A-Z][A-Z_]+_\d+$")
 
 
 def _is_own_placeholder(text: str, mapping_values: set[str]) -> bool:
-    for value in mapping_values:
-        if text in value:
-            return True
+    if text in mapping_values:
+        return True
     if _PLACEHOLDER_PATTERN.match(text):
         return True
     return False

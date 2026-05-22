@@ -23,9 +23,10 @@ def test_anonymization_prompt_path_default():
 
 def test_prompt_template_renders():
     template = Path("prompts/anonymize.txt").read_text()
-    rendered = template.format(
-        existing_mapping='{"Microsoft": "SOFTWARE_COMPANY_01"}',
-        message_text="John Smith works at Microsoft.",
+    rendered = (
+        template
+        .replace("{existing_mapping}", '{"Microsoft": "SOFTWARE_COMPANY_01"}')
+        .replace("{message_text}", "John Smith works at Microsoft.")
     )
     assert "John Smith works at Microsoft." in rendered
     assert '"Microsoft": "SOFTWARE_COMPANY_01"' in rendered

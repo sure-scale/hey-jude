@@ -70,9 +70,10 @@ def render_prompt(
     existing_mapping: dict[str, str],
 ) -> str:
     mapping_str = json.dumps(existing_mapping, indent=2) if existing_mapping else "{}"
-    return template.format(
-        message_text=message_text,
-        existing_mapping=mapping_str,
+    return (
+        template
+        .replace("{message_text}", message_text)
+        .replace("{existing_mapping}", mapping_str)
     )
 
 

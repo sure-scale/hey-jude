@@ -37,12 +37,12 @@ Rules:
    identification, "high" if structural patterns could still de-anonymize.
 
 Return ONLY a JSON object:
-{{
+{
   "entities_found": [
-    {{"text": "...", "type": "...", "action": "replace|keep|generalize",
-     "replacement": "...", "reason": "..."}}
+    {"text": "...", "type": "...", "action": "replace|keep|generalize",
+     "replacement": "...", "reason": "..."}
   ],
-  "context_descriptors": {{"PLACEHOLDER": "brief description"}},
+  "context_descriptors": {"PLACEHOLDER": "brief description"},
   "sensitivity": "low|high"
-}}
+}
 </instructions>
