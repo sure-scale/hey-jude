@@ -138,7 +138,7 @@ Azure AI Foundry exposes OpenAI-compatible endpoints for models deployed from th
 
 ```bash
 LOCAL_LLM_URL=https://<your-resource>.openai.azure.com/openai/v1
-LOCAL_LLM_MODEL=Kimi-K2.6
+LOCAL_LLM_MODEL=DeepSeek-V4-Pro
 LOCAL_LLM_API_KEY=<your-azure-api-key>
 ```
 
@@ -146,8 +146,8 @@ Available models (same endpoint, swap `LOCAL_LLM_MODEL`):
 
 | Model | `LOCAL_LLM_MODEL` value | Notes |
 |-------|------------------------|-------|
-| Kimi K2.6 | `Kimi-K2.6` | Fast, strong reasoning |
-| DeepSeek V4 Pro | `DeepSeek-V4-Pro` | Alternative, strong at structured output |
+| DeepSeek V4 Pro | `DeepSeek-V4-Pro` | Recommended — fast, strong at structured JSON output |
+| Kimi K2.6 | `Kimi-K2.6` | Reasoning model, needs high `max_tokens` (uses thinking tokens) |
 
 Any model deployed to your Azure AI project that serves an OpenAI-compatible chat completions endpoint will work. The gateway sends requests to `{LOCAL_LLM_URL}/chat/completions` with both `api-key` and `Authorization: Bearer` headers.
 
