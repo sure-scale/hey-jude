@@ -85,6 +85,7 @@ The defaults work out of the box for most users.
 | `API_KEY` | `sk-heyjude-dev` | Gateway authentication |
 | `LOCAL_LLM_URL` | `http://localhost:11434/v1` | Local anonymization endpoint |
 | `LOCAL_LLM_MODEL` | `qwen3.5:4b` | Local anonymization model |
+| `LOCAL_LLM_API_KEY` | *(empty)* | API key for cloud-hosted anonymization models |
 | `EXTERNAL_LLM_MODEL` | `ollama_chat/qwen3.5:4b` | Destination model via LiteLLM |
 | `EXTERNAL_LLM_API_BASE` | `http://localhost:11434` | LiteLLM API base for Ollama |
 | `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
@@ -128,6 +129,43 @@ EXTERNAL_LLM_MODEL=ollama_chat/qwen3.5:9b
 To use Apple MLX instead of Ollama, serve an OpenAI-compatible endpoint and point `LOCAL_LLM_URL` or `EXTERNAL_LLM_API_BASE` at that server.
 
 To route the final prompt to a cloud provider, set `EXTERNAL_LLM_MODEL` to any LiteLLM model identifier and provide that provider's API key, for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`.
+
+### Azure AI as Anonymization Backend
+
+Instead of running Ollama locally, you can use an Azure AI-hosted model for the anonymization layer. This is useful on machines where local inference is slow (e.g., laptops without dedicated GPU).
+
+Azure AI Foundry exposes OpenAI-compatible endpoints for models deployed from the model catalog. Set these in your `.env`:
+
+```bash
+LOCAL_LLM_URL=https://<your-resource>.openai.azure.com/openai/v1
+LOCAL_LLM_MODEL=DeepSeek-V4-Pro
+LOCAL_LLM_API_KEY=<your-azure-api-key>
+```
+
+Available models (same endpoint, swap `LOCAL_LLM_MODEL`):
+
+| Model | `LOCAL_LLM_MODEL` value | Notes |
+|-------|------------------------|-------|
+| DeepSeek V4 Pro | `DeepSeek-V4-Pro` | Recommended — fast, strong at structured JSON output |
+| Kimi K2.6 | `Kimi-K2.6` | Reasoning model, needs high `max_tokens` (uses thinking tokens) |
+
+Any model deployed to your Azure AI project that serves an OpenAI-compatible chat completions endpoint will work. The gateway sends requests to `{LOCAL_LLM_URL}/chat/completions` with both `api-key` and `Authorization: Bearer` headers.
+
+### E2E Testing
+
+The end-to-end test uses three models:
+
+| Role | Model | Purpose |
+|------|-------|---------|
+| Anonymizer | Configured via `LOCAL_LLM_*` | PII detection and replacement |
+| Destination | Gemini Flash | Receives anonymized prompts |
+| Evaluator | Gemini Pro | Judges anonymization quality (PII leaks, coherence, completeness) |
+
+```bash
+GEMINI_API_KEY=your-key python3 tests/e2e/test_gemini_anonymization.py
+```
+
+The test auto-downloads public-domain legal documents from SEC EDGAR on first run (NDAs, employment agreements, settlement agreements, etc.) and uses them alongside inline test cases. Downloaded documents are cached locally and gitignored.
 
 ---
 

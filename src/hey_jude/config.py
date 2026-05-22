@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     local_llm_url: str = "http://localhost:11434/v1"
     local_llm_model: str = "qwen3.5:4b"
+    local_llm_api_key: str = ""
 
     external_llm_model: str = "ollama_chat/qwen3.5:4b"
     external_llm_api_base: str | None = "http://localhost:11434"

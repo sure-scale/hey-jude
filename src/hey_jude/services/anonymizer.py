@@ -22,8 +22,6 @@ def validate_llm_anonymization_response(
     sensitivity = parsed.get("sensitivity", "low")
 
     entities: list[FoundEntity] = []
-    replacements_seen: set[str] = set()
-
     for item in entities_raw:
         action = item.get("action", "keep")
         replacement = item.get("replacement")
@@ -39,12 +37,6 @@ def validate_llm_anonymization_response(
                 raise ValueError(
                     f"Replacement for {original!r} leaks original text: {replacement!r}"
                 )
-            if replacement in replacements_seen:
-                raise ValueError(
-                    f"Found duplicate replacement {replacement!r} for {original!r}"
-                )
-            replacements_seen.add(replacement)
-
         entities.append(FoundEntity(
             text=item.get("text", ""),
             entity_type=item.get("type", "UNKNOWN"),
