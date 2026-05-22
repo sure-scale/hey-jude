@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hey_jude.config import Settings
 from hey_jude.models import ChatMessage, DetectedEntity, SubstitutionResult
+from hey_jude.services.text import (
+    apply_mapping_to_text as _apply_mapping_to_text,
+    apply_mapping_preserving_text_structure as _apply_mapping_preserving_text_structure,
+)
 
 
 class LocalAnonymizationResponse(BaseModel):
@@ -225,14 +229,6 @@ async def _call_local_llm(prompt: str, settings: Settings) -> str:
         return data["choices"][0]["message"]["content"]
 
 
-def _apply_mapping_to_text(text: str, mapping: dict[str, str]) -> str:
-    sorted_keys = sorted(mapping.keys(), key=len, reverse=True)
-    for original in sorted_keys:
-        replacement = mapping[original]
-        text = text.replace(original, replacement)
-    return text
-
-
 def _sanitize_context_descriptors(
     context_descriptors: dict[str, str],
     mapping: dict[str, str],
@@ -241,30 +237,6 @@ def _sanitize_context_descriptors(
         _apply_mapping_to_text(key, mapping): _apply_mapping_to_text(value, mapping)
         for key, value in context_descriptors.items()
     }
-
-
-def _replace_json_string_values(value: object, mapping: dict[str, str]) -> object:
-    if isinstance(value, str):
-        return _apply_mapping_to_text(value, mapping)
-    if isinstance(value, list):
-        return [_replace_json_string_values(item, mapping) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: _replace_json_string_values(item, mapping)
-            for key, item in value.items()
-        }
-    return value
-
-
-def _apply_mapping_preserving_text_structure(text: str, mapping: dict[str, str]) -> str:
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return _apply_mapping_to_text(text, mapping)
-    if not isinstance(parsed, (dict, list)):
-        return _apply_mapping_to_text(text, mapping)
-    replaced = _replace_json_string_values(parsed, mapping)
-    return json.dumps(replaced, separators=(",", ":"))
 
 
 def _json_value_shape_matches(original: object, sanitized: object) -> bool:
