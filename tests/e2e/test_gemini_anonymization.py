@@ -314,13 +314,14 @@ async def run_test_case(
     settings: Settings,
     template: str,
     run_eval: bool,
+    using_ollama: bool = True,
 ) -> dict:
     """Run a single test case. Returns result dict with pass/fail/scores."""
     name = test_case["name"]
     messages = [ChatMessage(role=m.role, content=m.content) for m in test_case["messages"]]
 
-    # Ensure ollama is healthy before each test
-    if not await check_ollama():
+    # Ensure ollama is healthy before each test (skip for cloud endpoints)
+    if using_ollama and not await check_ollama():
         print(f"  Ollama unresponsive, waiting up to 30s...")
         if not await wait_for_ollama():
             print_separator()
@@ -428,7 +429,7 @@ async def main():
     for i, test_case in enumerate(LEGAL_TEXTS):
         if i > 0:
             await asyncio.sleep(2)
-        r = await run_test_case(test_case, settings, template, run_eval=True)
+        r = await run_test_case(test_case, settings, template, run_eval=True, using_ollama=using_ollama)
         results.append(r)
 
     # Summary
