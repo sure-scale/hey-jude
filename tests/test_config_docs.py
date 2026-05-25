@@ -16,6 +16,11 @@ def test_safety_net_strictness_defaults_to_warn():
     assert s.safety_net_strictness == "warn"
 
 
+def test_document_unreadable_action_defaults_to_reject():
+    s = Settings()
+    assert s.document_unreadable_action == "reject"
+
+
 def test_anonymization_prompt_path_default():
     s = Settings()
     assert s.anonymization_prompt_path == "prompts/anonymize.txt"
@@ -69,4 +74,5 @@ def test_readme_documents_actual_environment_names():
     assert "`LOCAL_LLM_MODEL`" in readme
     assert "`EXTERNAL_LLM_MODEL`" in readme
     assert "`EXTERNAL_LLM_API_BASE`" in readme
+    assert "`DOCUMENT_UNREADABLE_ACTION`" in readme
     assert "`HEY_JUDE_" not in readme

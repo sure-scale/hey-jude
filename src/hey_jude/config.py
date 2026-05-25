@@ -46,6 +46,7 @@ class Settings(BaseSettings):
 
     anonymization_mode: Literal["llm", "mechanical"] = "llm"
     safety_net_strictness: Literal["off", "warn", "strict"] = "warn"
+    document_unreadable_action: Literal["reject", "warn", "skip"] = "reject"
     anonymization_prompt_path: str = "prompts/anonymize.txt"
 
 

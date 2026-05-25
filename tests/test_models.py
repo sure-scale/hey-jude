@@ -20,6 +20,17 @@ def test_chat_message_valid():
     assert msg.content == "Hello"
 
 
+def test_chat_message_accepts_openai_content_parts():
+    msg = ChatMessage(
+        role="user",
+        content=[
+            {"type": "text", "text": "Review this."},
+            {"type": "input_file", "filename": "memo.pdf", "file_data": "abc"},
+        ],
+    )
+    assert msg.content[0]["text"] == "Review this."
+
+
 def test_chat_completion_request_minimal():
     req = ChatCompletionRequest(
         model="gpt-4o",

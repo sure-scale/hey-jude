@@ -18,6 +18,7 @@ from hey_jude.models import (
 )
 from hey_jude.services.anonymizer import anonymize_messages
 from hey_jude.services.detector import detect_entities
+from hey_jude.services.documents import DocumentProcessingError, content_to_text
 from hey_jude.services.mapper import reverse_map, reverse_map_text
 from hey_jude.services.router import route_completion
 from hey_jude.services.safety_net import safety_net_check
@@ -98,20 +99,17 @@ async def _messages_with_clarification_context(
     return [*original.messages, *body.messages]
 
 
-def _content_to_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "\n".join(parts)
-    if isinstance(content, dict) and isinstance(content.get("text"), str):
-        return content["text"]
-    return ""
+def _normalize_document_content(
+    messages: list[ChatMessage],
+    settings,
+) -> tuple[list[ChatMessage], list[dict[str, Any]]]:
+    normalized = []
+    warnings = []
+    for message in messages:
+        result = content_to_text(message.content, settings)
+        normalized.append(ChatMessage(role=message.role, content=result.text))
+        warnings.extend(warning.to_dict() for warning in result.warnings)
+    return normalized, warnings
 
 
 def _choice_text(response: dict) -> str:
@@ -154,6 +152,11 @@ async def _run_gateway_completion(
 
     request_id = str(uuid.uuid4())
     messages = await _messages_with_clarification_context(body, redis_client)
+
+    try:
+        messages, document_warnings = _normalize_document_content(messages, settings)
+    except DocumentProcessingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     try:
         redis_ok = await redis_client.health_check()
@@ -246,6 +249,7 @@ async def _run_gateway_completion(
                 entities_detected=all_entities_count,
                 sensitivity=sub_result.sensitivity,
                 status="clarification_needed",
+                document_warnings=document_warnings or None,
             ),
         )
 
@@ -284,12 +288,15 @@ async def _run_gateway_completion(
                     arguments, reverse_mapping
                 )
 
-    external_response["heyjude_metadata"] = {
+    metadata = {
         "request_id": request_id,
         "entities_detected": all_entities_count,
         "sensitivity": sub_result.sensitivity,
         "status": "completed",
     }
+    if document_warnings:
+        metadata["document_warnings"] = document_warnings
+    external_response["heyjude_metadata"] = metadata
 
     return external_response
 
@@ -298,13 +305,13 @@ def _anthropic_to_chat_request(body: dict) -> ChatCompletionRequest:
     messages = []
     system = body.get("system")
     if system:
-        messages.append(ChatMessage(role="system", content=_content_to_text(system)))
+        messages.append(ChatMessage(role="system", content=system))
     for message in body.get("messages", []):
         role = message.get("role")
         if role not in {"user", "assistant"}:
             continue
         messages.append(
-            ChatMessage(role=role, content=_content_to_text(message.get("content", "")))
+            ChatMessage(role=role, content=message.get("content", ""))
         )
     return ChatCompletionRequest(
         model=body["model"],
@@ -338,21 +345,13 @@ def _chat_to_anthropic_response(response: dict | ChatCompletionResponse, model: 
     }
 
 
-def _gemini_parts_to_text(parts: list) -> str:
-    return "\n".join(
-        part["text"]
-        for part in parts
-        if isinstance(part, dict) and isinstance(part.get("text"), str)
-    )
-
-
 def _gemini_to_chat_request(model: str, body: dict) -> ChatCompletionRequest:
     messages = []
     system_instruction = body.get("systemInstruction")
     if isinstance(system_instruction, dict):
-        system_text = _gemini_parts_to_text(system_instruction.get("parts", []))
-        if system_text:
-            messages.append(ChatMessage(role="system", content=system_text))
+        system_parts = system_instruction.get("parts", [])
+        if system_parts:
+            messages.append(ChatMessage(role="system", content=system_parts))
 
     contents = body.get("contents", [])
     if isinstance(contents, dict):
@@ -361,8 +360,7 @@ def _gemini_to_chat_request(model: str, body: dict) -> ChatCompletionRequest:
         if not isinstance(content, dict):
             continue
         role = "assistant" if content.get("role") == "model" else "user"
-        text = _gemini_parts_to_text(content.get("parts", []))
-        messages.append(ChatMessage(role=role, content=text))
+        messages.append(ChatMessage(role=role, content=content.get("parts", [])))
 
     generation_config = body.get("generationConfig") or {}
     return ChatCompletionRequest(
@@ -400,23 +398,13 @@ def _chat_to_gemini_response(response: dict | ChatCompletionResponse, model: str
     }
 
 
-def _responses_content_to_text(content: Any) -> str:
+def _responses_content_to_text(content: Any) -> Any:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(parts)
+        return content
     if isinstance(content, dict):
-        text = content.get("text")
-        if isinstance(text, str):
-            return text
+        return content
     return ""
 
 
