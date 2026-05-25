@@ -90,8 +90,11 @@ The defaults work out of the box for most users.
 | `EXTERNAL_LLM_API_BASE` | `http://localhost:11434` | LiteLLM API base for Ollama |
 | `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
 | `SAFETY_NET_STRICTNESS` | `warn` | `warn` (auto-fix), `strict` (reject), or `off` |
+| `DOCUMENT_UNREADABLE_ACTION` | `reject` | What to do when an uploaded file has no readable text layer: `reject`, `warn`, or `skip` |
 
 When running through Docker Compose, the service automatically uses `host.docker.internal` so the container can reach Ollama on your Mac.
+
+Hey Jude extracts text from common legal document formats before anonymization, including text PDFs, DOCX, HTML, EML, TXT, Markdown, and RTF. Scanned PDFs, flattened PDFs, and images are not OCRed yet; by default they are rejected so unreadable content is not forwarded without anonymization.
 
 ---
 

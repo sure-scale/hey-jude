@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
-    content: str
+    content: Any
 
 
 class ChatCompletionRequest(BaseModel):
@@ -45,6 +45,7 @@ class HeyJudeMetadata(BaseModel):
     entities_detected: int
     sensitivity: str
     status: str
+    document_warnings: list[dict[str, Any]] | None = None
 
 
 class ChatCompletionResponse(BaseModel):

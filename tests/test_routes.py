@@ -293,6 +293,131 @@ async def test_structured_openai_envelopes_forwarded_unchanged(client):
     assert mock_route.await_args.kwargs["tool_choice"] == "auto"
 
 
+async def test_chat_endpoint_extracts_html_file_content(client):
+    encoded = "PGh0bWw+PGJvZHk+PHA+Sm9obiBTbWl0aCBhdCBNYWlubGFuZCBDb3JwLjwvcD48L2JvZHk+PC9odG1sPg=="
+
+    with patch("hey_jude.routes.detect_entities", new_callable=AsyncMock) as mock_detect, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_detect.return_value = []
+        mock_route.return_value = {
+            "id": "chatcmpl-html",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Summarize the attachment."},
+                            {
+                                "type": "input_file",
+                                "filename": "memo.html",
+                                "file_data": f"data:text/html;base64,{encoded}",
+                            },
+                        ],
+                    }
+                ],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    routed_messages = mock_route.await_args.kwargs["messages"]
+    assert "Summarize the attachment." in routed_messages[0].content
+    assert "John Smith at Mainland Corp." in routed_messages[0].content
+
+
+async def test_chat_endpoint_rejects_unreadable_image_by_default(client):
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,bm90LXJlYWQ=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        headers={"X-API-Key": "sk-test-key"},
+    )
+
+    assert resp.status_code == 422
+    assert "not readable as text" in resp.json()["detail"]
+
+
+async def test_chat_endpoint_warns_and_omits_unreadable_image(client, app):
+    app.state.settings.document_unreadable_action = "warn"
+
+    with patch("hey_jude.routes.detect_entities", new_callable=AsyncMock) as mock_detect, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_detect.return_value = []
+        mock_route.return_value = {
+            "id": "chatcmpl-image-warn",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Review this."},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "data:image/png;base64,bm90LXJlYWQ=",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["heyjude_metadata"]["document_warnings"][0]["action"] == "warn"
+    routed = mock_route.await_args.kwargs["messages"][0].content
+    assert "Review this." in routed
+    assert "not-read" not in routed
+
+
 async def test_responses_endpoint_accepts_mike_openai_shape(client):
     responses_tools = [
         {
