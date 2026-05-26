@@ -239,10 +239,29 @@ def process(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> Iterator[subpr
 
 def supabase_status(workdir: Path) -> dict[str, str]:
     status = run(["supabase", "status", "-o", "json"], cwd=workdir, timeout=60)
-    start = status.stdout.find("{")
+    return parse_supabase_status_output(status.stdout)
+
+
+def parse_supabase_status_output(output: str) -> dict[str, str]:
+    start = output.find("{")
     if start < 0:
-        raise RuntimeError(f"Could not parse supabase status:\n{status.stdout}")
-    return json.loads(status.stdout[start:])
+        raise RuntimeError(f"Could not parse supabase status:\n{output}")
+    parsed, _ = json.JSONDecoder().raw_decode(output[start:])
+    return parsed
+
+
+def test_parse_supabase_status_output_ignores_cli_chatter() -> None:
+    output = """Stopped services: [supabase_studio_example]
+{
+  "API_URL": "http://127.0.0.1:54321",
+  "DB_URL": "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+}
+A new version of Supabase CLI is available.
+"""
+    parsed = parse_supabase_status_output(output)
+
+    assert parsed["API_URL"] == "http://127.0.0.1:54321"
+    assert parsed["DB_URL"].startswith("postgresql://")
 
 
 def ensure_supabase(workdir: Path, mike_dir: Path) -> dict[str, str]:

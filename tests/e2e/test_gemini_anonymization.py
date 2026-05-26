@@ -67,7 +67,7 @@ async def check_ollama() -> bool:
 
 # --- Destination test ---
 
-async def test_destination(sanitized_messages: list[ChatMessage]) -> dict:
+async def run_destination_test(sanitized_messages: list[ChatMessage]) -> dict:
     """Forward anonymized messages to Gemini Flash and check the response."""
     messages = [{"role": m.role, "content": m.content} for m in sanitized_messages]
     try:
@@ -348,7 +348,7 @@ async def run_test_case(
 
     # Destination test (Gemini Flash)
     print("  DESTINATION: forwarding to Gemini Flash...")
-    dest = await test_destination(result.sanitized_messages)
+    dest = await run_destination_test(result.sanitized_messages)
     if dest["ok"]:
         print(f"  DESTINATION: OK ({len(dest['response'])} chars response)")
     else:

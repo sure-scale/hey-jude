@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,6 +31,8 @@ class LocalAnonymizationResponse(BaseModel):
 _PLACEHOLDER_LABELS = {
     "ORGANIZATION": "COMPANY",
 }
+
+_SUBSTITUTION_PROMPT_PATH = Path("prompts/substitute.md")
 
 
 def _build_placeholder_replacements(
@@ -76,26 +79,8 @@ def _build_prompt(entities: list[DetectedEntity], query: str) -> str:
         [{"text": e.text, "type": e.entity_type} for e in entities],
         indent=2,
     )
-    return f"""<task>
-Analyze this legal professional's query for sensitive entity handling.
-</task>
-
-<entities>
-{entity_list}
-</entities>
-
-<query>
-{query}
-</query>
-
-<instructions>
-1. Classify sensitivity: "low" if entity replacement alone prevents identification, "high" if structural patterns or relationships could de-anonymize.
-2. For each entity, provide a brief context descriptor (what kind of entity it is, without identifying it).
-3. Generate fictional replacement names that preserve the entity's role and domain. Always use fictional names, never descriptive phrases.
-4. If high sensitivity: also rephrase the query to obscure identifying structural patterns while preserving the legal question's intent.
-5. If you are unsure about the appropriate anonymization strategy, set needs_clarification to true and provide a clarification question.
-6. Return ONLY a JSON object with these keys: sensitivity, reasoning, mapping, context_descriptors, sanitized_text, needs_clarification, clarification_question
-</instructions>"""
+    template = _SUBSTITUTION_PROMPT_PATH.read_text()
+    return template.replace("{entities}", entity_list).replace("{query}", query)
 
 
 def _normalize_context_descriptors(parsed: dict) -> dict:
