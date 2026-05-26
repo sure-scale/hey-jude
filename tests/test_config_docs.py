@@ -39,6 +39,21 @@ def test_prompt_template_renders():
     assert "{message_text}" not in rendered
 
 
+def test_substitution_prompt_template_is_user_editable():
+    template = Path("prompts/substitute.md").read_text()
+
+    assert "{entities}" in template
+    assert "{query}" in template
+    assert "sensitivity" in template
+    assert "needs_clarification" in template
+
+
+def test_docker_image_includes_user_editable_prompts():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert "COPY prompts/ ./prompts/" in dockerfile
+
+
 def test_docker_compose_uses_settings_environment_names():
     compose = (ROOT / "docker-compose.yml").read_text()
 

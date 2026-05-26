@@ -13,6 +13,31 @@ from hey_jude.services.text import (
     apply_mapping_preserving_text_structure,
 )
 
+_GENERIC_PLACEHOLDER_TERMS = {
+    "address",
+    "agreement",
+    "company",
+    "consultant",
+    "date",
+    "director",
+    "document",
+    "employee",
+    "employer",
+    "executive",
+    "person",
+}
+
+
+def _replacement_leaks_original(original: str, replacement: str) -> bool:
+    if len(original) < 3:
+        return False
+
+    normalized_original = original.strip().casefold()
+    if normalized_original in _GENERIC_PLACEHOLDER_TERMS:
+        return False
+
+    return normalized_original in replacement.casefold()
+
 
 def validate_llm_anonymization_response(
     parsed: dict,
@@ -33,7 +58,7 @@ def validate_llm_anonymization_response(
 
         if replacement:
             original = item.get("text", "")
-            if len(original) >= 3 and original.casefold() in replacement.casefold():
+            if _replacement_leaks_original(original, replacement):
                 raise ValueError(
                     f"Replacement for {original!r} leaks original text: {replacement!r}"
                 )

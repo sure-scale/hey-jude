@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+
 import pytest
 from hey_jude.config import Settings
 from hey_jude.models import ChatMessage, DetectedEntity
@@ -80,11 +82,15 @@ def test_build_prompt():
         DetectedEntity(text="Microsoft", entity_type="ORGANIZATION", start=8, end=17, score=0.9),
     ]
     query = "Meta vs Microsoft IP case"
+    template = Path("prompts/substitute.md").read_text()
     prompt = _build_prompt(entities, query)
+    assert template.startswith("<task>")
     assert "Meta" in prompt
     assert "Microsoft" in prompt
     assert "ORGANIZATION" in prompt
     assert "sensitivity" in prompt
+    assert "{entities}" not in prompt
+    assert "{query}" not in prompt
 
 
 def test_parse_llm_response_valid():
@@ -135,7 +141,7 @@ async def test_call_local_llm_uses_ollama_native_api_with_thinking_disabled(http
     assert payload["stream"] is False
     assert payload["think"] is False
     assert payload["options"]["temperature"] == 0.3
-    assert payload["options"]["num_predict"] == 1024
+    assert payload["options"]["num_predict"] == 4096
     assert raw.startswith('{"sensitivity":"low"')
 
 

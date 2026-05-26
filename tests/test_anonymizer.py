@@ -57,19 +57,32 @@ def test_validate_response_leak_detection():
         validate_llm_anonymization_response(raw)
 
 
-def test_validate_response_duplicate_replacements():
+def test_validate_response_allows_duplicate_replacements_for_surface_variants():
     raw = {
         "entities_found": [
-            {"text": "Microsoft", "type": "ORGANIZATION", "action": "replace",
-             "replacement": "COMPANY_01", "reason": "company"},
-            {"text": "Google", "type": "ORGANIZATION", "action": "replace",
-             "replacement": "COMPANY_01", "reason": "company"},
+            {"text": "Caroline Keddy", "type": "PERSON", "action": "replace",
+             "replacement": "PERSON_01", "reason": "full name"},
+            {"text": "Ms. Keddy", "type": "PERSON", "action": "replace",
+             "replacement": "PERSON_01", "reason": "title and last name"},
         ],
         "context_descriptors": {},
         "sensitivity": "low",
     }
-    with pytest.raises(ValueError, match="duplicate replacement"):
-        validate_llm_anonymization_response(raw)
+    entities, _, _ = validate_llm_anonymization_response(raw)
+    assert [entity.replacement for entity in entities] == ["PERSON_01", "PERSON_01"]
+
+
+def test_validate_response_generic_placeholder_term_is_not_leak():
+    raw = {
+        "entities_found": [
+            {"text": "Company", "type": "DEFINED_TERM", "action": "replace",
+             "replacement": "FINTECH_COMPANY_01", "reason": "defined term variant"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    entities, _, _ = validate_llm_anonymization_response(raw)
+    assert entities[0].replacement == "FINTECH_COMPANY_01"
 
 
 def test_build_mapping_from_entities():
