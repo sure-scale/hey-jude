@@ -86,6 +86,14 @@ def render_prompt(
     message_text: str,
     existing_mapping: dict[str, str],
 ) -> str:
+    """Substitute the per-request variables into the prompt template.
+
+    The template deliberately keeps its static blocks (task, instructions,
+    schema) first and both variables (`existing_mapping`, `message_text`) last.
+    That ordering makes the large static portion a stable byte prefix so the LLM
+    provider's automatic prompt caching can reuse it across every request.
+    Keep the variables at the end when editing the template, or caching breaks.
+    """
     mapping_str = json.dumps(existing_mapping, indent=2) if existing_mapping else "{}"
     return (
         template
