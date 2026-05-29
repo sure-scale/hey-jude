@@ -52,6 +52,20 @@ class Settings(BaseSettings):
     custom_recognizers_path: str | None = None
     known_entities_path: str | None = None
 
+    # Request-level audit logging. Off by default. The log is tamper-evident
+    # (hash-chained JSONL) and meant to be kept internal. Default content level
+    # stores no raw PII — only metadata plus content digests.
+    audit_enabled: bool = False
+    audit_destination: str = "stdout"  # "stdout" or a file path
+    audit_content_level: Literal["metadata", "anonymized", "full"] = "metadata"
+    audit_rotation: Literal["none", "daily", "monthly"] = "monthly"
+    audit_hmac_key: str | None = None
+    audit_failure_mode: Literal["ignore", "fail"] = "ignore"
+    audit_log_ip: bool = True
+    audit_trust_forwarded_for: bool = False
+    audit_matter_header: str = "X-Heyjude-Matter-Id"
+    audit_actor_header: str | None = None  # opt-in; e.g. "X-Heyjude-Actor"
+
     # Populated from custom_recognizers_path; not read from the environment.
     custom_recognizer_specs: list[Any] = Field(default_factory=list, exclude=True)
 

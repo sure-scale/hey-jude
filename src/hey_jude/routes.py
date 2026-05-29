@@ -1,12 +1,15 @@
 import json
+import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 import httpx
 
+from hey_jude.services.audit import AuditRecord, sha256_text
 from hey_jude.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -140,9 +143,67 @@ def _response_usage(response: dict) -> dict:
     }
 
 
+def _client_ip(request: Request, settings) -> str | None:
+    if not settings.audit_log_ip:
+        return None
+    if settings.audit_trust_forwarded_for:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _canonical_messages(messages: list[ChatMessage]) -> str:
+    return json.dumps(
+        [{"role": m.role, "content": m.content} for m in messages],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _messages_payload(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    return [{"role": m.role, "content": m.content} for m in messages]
+
+
+def _record_input(record: AuditRecord, messages: list[ChatMessage], level: str) -> None:
+    record.input_sha256 = sha256_text(_canonical_messages(messages))
+    if level == "full":
+        record.input = _messages_payload(messages)
+
+
+def _record_output(record: AuditRecord, messages: list[ChatMessage], level: str) -> None:
+    record.output_sha256 = sha256_text(_canonical_messages(messages))
+    if level in ("anonymized", "full"):
+        record.output = _messages_payload(messages)
+
+
+def _safe_error(exc: Exception) -> str:
+    # HTTPException details are operator-facing strings (no client PII); other
+    # exceptions are recorded by type only to avoid leaking content into the log.
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return type(exc).__name__
+
+
+async def _emit_audit(request: Request, record: AuditRecord) -> None:
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        return
+    settings = request.app.state.settings
+    try:
+        await audit_log.record(record, datetime.now(timezone.utc))
+    except Exception as exc:  # noqa: BLE001 - failure policy decides what happens
+        if settings.audit_failure_mode == "fail":
+            raise HTTPException(status_code=503, detail="Audit logging failed") from exc
+        print(f"hey-jude: audit logging failed: {exc!r}", file=sys.stderr, flush=True)
+
+
 async def _run_gateway_completion(
     body: ChatCompletionRequest,
     request: Request,
+    route: str = "chat_completions",
 ) -> dict | ChatCompletionResponse:
     settings = request.app.state.settings
     redis_client = request.app.state.redis_client
@@ -152,12 +213,57 @@ async def _run_gateway_completion(
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     request_id = str(uuid.uuid4())
+
+    audit_enabled = getattr(request.app.state, "audit_log", None) is not None
+    record: AuditRecord | None = None
+    if audit_enabled:
+        record = AuditRecord(
+            request_id=request_id,
+            route=route,
+            status="error",
+            matter_id=request.headers.get(settings.audit_matter_header),
+            actor=(
+                request.headers.get(settings.audit_actor_header)
+                if settings.audit_actor_header
+                else None
+            ),
+            client_ip=_client_ip(request, settings),
+            provider=settings.external_llm_model,
+            model=settings.external_llm_model,
+            anonymization_mode=settings.anonymization_mode,
+        )
+    started = time.perf_counter()
+    try:
+        return await _gateway_pipeline(body, request, request_id, record)
+    except Exception as exc:
+        if record is not None:
+            record.status = "error"
+            record.error = _safe_error(exc)
+        raise
+    finally:
+        if record is not None:
+            record.total_ms = int((time.perf_counter() - started) * 1000)
+            await _emit_audit(request, record)
+
+
+async def _gateway_pipeline(
+    body: ChatCompletionRequest,
+    request: Request,
+    request_id: str,
+    record: AuditRecord | None,
+) -> dict | ChatCompletionResponse:
+    settings = request.app.state.settings
+    redis_client = request.app.state.redis_client
+
     messages = await _messages_with_clarification_context(body, redis_client)
 
     try:
         messages, document_warnings = _normalize_document_content(messages, settings)
     except DocumentProcessingError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    if record is not None:
+        _record_input(record, messages, settings.audit_content_level)
 
     try:
         redis_ok = await redis_client.health_check()
@@ -190,6 +296,8 @@ async def _run_gateway_completion(
             sn_result = await safety_net_check(
                 anon_result.sanitized_messages, anon_result.mapping, settings,
             )
+            if record is not None:
+                record.safety_net_passed = sn_result.passed
             if not sn_result.passed:
                 raise HTTPException(
                     status_code=422,
@@ -229,7 +337,14 @@ async def _run_gateway_completion(
             )
         all_entities_count = len(all_entities) + len(set(known_seed.values()))
 
+    if record is not None:
+        record.entities_detected = all_entities_count
+        record.sensitivity = sub_result.sensitivity
+        _record_output(record, sub_result.sanitized_messages, settings.audit_content_level)
+
     if sub_result.needs_clarification and settings.allow_clarification_requests:
+        if record is not None:
+            record.status = "clarification_needed"
         await redis_client.store_request(
             request_id,
             body.model_dump(exclude={"request_id"}),
@@ -267,12 +382,15 @@ async def _run_gateway_completion(
 
     completion_kwargs = _route_kwargs(body, settings)
 
+    external_started = time.perf_counter()
     external_response = await route_completion(
         messages=sub_result.sanitized_messages,
         context_descriptors=sub_result.context_descriptors,
         model=settings.external_llm_model,
         **completion_kwargs,
     )
+    if record is not None:
+        record.external_latency_ms = int((time.perf_counter() - external_started) * 1000)
 
     mapping = await redis_client.get_mapping(request_id)
     if mapping is None:
@@ -303,6 +421,9 @@ async def _run_gateway_completion(
     if document_warnings:
         metadata["document_warnings"] = document_warnings
     external_response["heyjude_metadata"] = metadata
+
+    if record is not None:
+        record.status = "completed"
 
     return external_response
 
@@ -625,13 +746,13 @@ async def health(request: Request):
 
 @router.post("/v1/chat/completions")
 async def chat_completions(body: ChatCompletionRequest, request: Request):
-    return await _run_gateway_completion(body, request)
+    return await _run_gateway_completion(body, request, route="chat_completions")
 
 
 @router.post("/v1/responses")
 async def responses(body: dict, request: Request):
     chat_body = _responses_to_chat_request(body)
-    response = await _run_gateway_completion(chat_body, request)
+    response = await _run_gateway_completion(chat_body, request, route="responses")
     responses_response = _chat_to_responses_response(response, body["model"])
     if body.get("stream"):
         return StreamingResponse(
@@ -644,7 +765,7 @@ async def responses(body: dict, request: Request):
 @router.post("/v1/messages")
 async def anthropic_messages(body: dict, request: Request):
     chat_body = _anthropic_to_chat_request(body)
-    response = await _run_gateway_completion(chat_body, request)
+    response = await _run_gateway_completion(chat_body, request, route="anthropic_messages")
     if body.get("stream"):
         model = body["model"]
         text = _choice_text(response)
@@ -666,7 +787,7 @@ async def anthropic_messages(body: dict, request: Request):
 @router.post("/v1/models/{model}:generateContent")
 async def gemini_generate_content(model: str, body: dict, request: Request):
     chat_body = _gemini_to_chat_request(model, body)
-    response = await _run_gateway_completion(chat_body, request)
+    response = await _run_gateway_completion(chat_body, request, route="gemini_generate")
     return _chat_to_gemini_response(response, model)
 
 
@@ -674,7 +795,7 @@ async def gemini_generate_content(model: str, body: dict, request: Request):
 @router.post("/v1/models/{model}:streamGenerateContent")
 async def gemini_stream_generate_content(model: str, body: dict, request: Request):
     chat_body = _gemini_to_chat_request(model, body)
-    response = await _run_gateway_completion(chat_body, request)
+    response = await _run_gateway_completion(chat_body, request, route="gemini_stream")
     gemini_resp = _chat_to_gemini_response(response, model)
     
     async def event_generator():

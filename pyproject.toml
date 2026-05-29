@@ -25,6 +25,9 @@ dependencies = [
     "pyyaml>=6.0.0",
 ]
 
+[project.scripts]
+hey-jude = "hey_jude.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
