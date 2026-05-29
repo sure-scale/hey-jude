@@ -17,3 +17,7 @@ venv/
 htmlcov/
 docs/superpowers/
 tests/fixtures/legal_docs/*.txt
+
+# Audit logs (never commit; may contain identifiers)
+audit/
+*.audit.jsonl

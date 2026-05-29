@@ -1,3 +1,4 @@
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from hey_jude.config import Settings, settings as default_settings
 from hey_jude.redis_client import RedisClient
 from hey_jude.routes import router
+from hey_jude.services.audit import AuditLog
 from hey_jude.services.known_entities import load_known_entities
 
 
@@ -22,6 +24,22 @@ async def lifespan(app: FastAPI):
     app.state.known_entities = (
         load_known_entities(known_entities_path) if known_entities_path else []
     )
+    settings = app.state.settings
+    if settings.audit_enabled:
+        if settings.audit_content_level == "full":
+            print(
+                "hey-jude: WARNING audit_content_level=full persists raw "
+                "pre-anonymization content (client PII) to the audit log",
+                file=sys.stderr,
+                flush=True,
+            )
+        app.state.audit_log = AuditLog(
+            destination=settings.audit_destination,
+            hmac_key=settings.audit_hmac_key,
+            rotation=settings.audit_rotation,
+        )
+    else:
+        app.state.audit_log = None
     yield
     await app.state.redis_client.close()
 

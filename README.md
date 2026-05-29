@@ -93,6 +93,11 @@ The defaults work out of the box for most users.
 | `DOCUMENT_UNREADABLE_ACTION` | `reject` | What to do when an uploaded file has no readable text layer: `reject`, `warn`, or `skip` |
 | `CUSTOM_RECOGNIZERS_PATH` | *(unset)* | Path to a YAML/JSON file of custom Presidio regex recognizers |
 | `KNOWN_ENTITIES_PATH` | *(unset)* | Path to a YAML/JSON known-entity dictionary |
+| `AUDIT_ENABLED` | `false` | Enable request-level audit logging |
+| `AUDIT_DESTINATION` | `stdout` | `stdout` or a file path |
+| `AUDIT_CONTENT_LEVEL` | `metadata` | `metadata` (digests only), `anonymized` (PII-free payload), `full` (raw content) |
+| `AUDIT_ROTATION` | `monthly` | Segment files by period: `none`, `daily`, `monthly` |
+| `AUDIT_FAILURE_MODE` | `ignore` | `ignore` (logging never blocks a request) or `fail` (fail-closed) |
 
 When running through Docker Compose, the service automatically uses `host.docker.internal` so the container can reach Ollama on your Mac.
 
@@ -107,6 +112,26 @@ Default NER misses the abbreviated, inconsistent names common in legal text ("Ca
 By default an auto-numbered placeholder (e.g. `CLIENT_NAME_01`) is assigned per request. Set `replace_with` on an entry to fix its placeholder so it stays identical across every request.
 
 Hey Jude extracts text from common legal document formats before anonymization, including text PDFs, DOCX, HTML, EML, TXT, Markdown, and RTF. Scanned PDFs, flattened PDFs, and images are not OCRed yet; by default they are rejected so unreadable content is not forwarded without anonymization.
+
+### Audit Logging
+
+Set `AUDIT_ENABLED=true` to record one envelope per request: timestamps, latency, which external model it was routed to, entity count, sensitivity, safety-net result, and SHA-256 digests of the input and the anonymized output. This is the artifact that proves anonymization happened and that only PII-free content left the network.
+
+**Tamper-evident.** The log is hash-chained JSONL: each record carries the hash of the previous one, so editing or deleting any historical record breaks the chain from that point on — detectable even by someone with write access. Verify a segment at any time:
+
+```bash
+hey-jude audit verify audit/audit-2026-05.jsonl
+```
+
+Set `AUDIT_HMAC_KEY` to bind the chain to a secret so an attacker who cannot read the key cannot recompute valid hashes. Walk a segment for conflict checks, client audits, or discovery production:
+
+```bash
+hey-jude audit query audit/audit-2026-05.jsonl --matter M-123456 --since 2026-05-01
+```
+
+**Content level.** The default `metadata` stores **no raw client PII** — only digests — so the audit trail itself does not become a confidential-data store. Choose `anonymized` to retain the PII-free payload (useful as a malpractice-defensible record of what the AI was actually asked and answered, without storing client identities). `full` additionally persists the raw pre-anonymization content and is a deliberate PII honeypot; it logs a startup warning and should be reserved for environments where that risk is understood. Tag requests with the `X-Heyjude-Matter-Id` header so records are queryable by matter; enable `AUDIT_ACTOR_HEADER` only if your firm policy permits attorney attribution.
+
+**Immutability vs. retention.** A hash chain makes history immutable, but legal duties (matter-close destruction, data-subject erasure, retention schedules) require eventual deletion. Hey Jude resolves this with period segments (`AUDIT_ROTATION`): each month/day is an independent chain in its own file, so an expired segment can be destroyed wholesale without invalidating the active chain. **Suspend rotation and deletion while a matter is under legal hold.** For cryptographic-grade WORM, point `AUDIT_DESTINATION` at a write-once volume (`chattr +a` on Linux) or ship sealed segments to object storage with an immutability lock (e.g. S3 Object Lock). Keep the log on encrypted disk; Hey Jude does not encrypt records itself.
 
 ---
 

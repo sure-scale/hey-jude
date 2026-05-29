@@ -1315,3 +1315,131 @@ async def test_known_entity_seeds_llm_mode_mapping(client, app):
     assert "Acme Corp" not in sent
     assert "CLIENT_01" in sent
     assert resp.json()["choices"][0]["message"]["content"] == "Acme Corp noted."
+
+
+def _audit_settings(tmp_path, **overrides):
+    return Settings(
+        redis_url="redis://localhost:6379/1",
+        redis_ttl_seconds=60,
+        api_key="sk-test-key",
+        anonymization_mode="mechanical",
+        audit_enabled=True,
+        audit_destination=str(tmp_path / "audit.jsonl"),
+        audit_rotation="none",
+        **overrides,
+    )
+
+
+async def _audit_client(app):
+    async with app.router.lifespan_context(app):
+        app.state.redis_client = MemoryRedis()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+
+
+async def test_audit_record_written_on_success(tmp_path):
+    settings = _audit_settings(tmp_path)
+    app = create_app(settings)
+    agen = _audit_client(app)
+    client = await agen.__anext__()
+    try:
+        with patch(
+            "hey_jude.routes.detect_entities", new_callable=AsyncMock
+        ) as mock_detect, patch(
+            "hey_jude.routes.substitute_entities", new_callable=AsyncMock
+        ) as mock_substitute, patch(
+            "hey_jude.routes.route_completion", new_callable=AsyncMock
+        ) as mock_route:
+            mock_detect.return_value = []
+            mock_substitute.return_value = SubstitutionResult(
+                mapping={},
+                reverse_mapping={},
+                context_descriptors={},
+                sanitized_messages=[ChatMessage(role="user", content="hi")],
+                sensitivity="low",
+                needs_clarification=False,
+                clarification_question=None,
+            )
+            mock_route.return_value = {
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}
+                ]
+            }
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o",
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers={"X-API-Key": "sk-test-key", "X-Heyjude-Matter-Id": "M-42"},
+            )
+            assert resp.status_code == 200
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
+
+    from hey_jude.services.audit import verify_chain
+    path = str(tmp_path / "audit.jsonl")
+    assert verify_chain(path).ok
+    with open(path) as handle:
+        record = json.loads(handle.readline())
+    assert record["status"] == "completed"
+    assert record["route"] == "chat_completions"
+    assert record["matter_id"] == "M-42"
+    assert record["total_ms"] is not None
+    # metadata tier: hashes present, raw content absent
+    assert record["input_sha256"]
+    assert record["input"] is None
+
+
+async def test_audit_record_written_on_auth_failure(tmp_path):
+    settings = _audit_settings(tmp_path)
+    app = create_app(settings)
+    agen = _audit_client(app)
+    client = await agen.__anext__()
+    try:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert resp.status_code == 401
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
+
+    # Auth fails before request_id is generated, so no record is emitted.
+    assert not (tmp_path / "audit.jsonl").exists()
+
+
+async def test_audit_record_written_on_pipeline_error(tmp_path):
+    settings = _audit_settings(tmp_path)
+    app = create_app(settings)
+    agen = _audit_client(app)
+    client = await agen.__anext__()
+    try:
+        with patch(
+            "hey_jude.routes.detect_entities", new_callable=AsyncMock
+        ) as mock_detect, patch(
+            "hey_jude.routes.substitute_entities", new_callable=AsyncMock
+        ) as mock_substitute:
+            mock_detect.return_value = []
+            mock_substitute.side_effect = ValueError("boom")
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o",
+                      "messages": [{"role": "user", "content": "hi"}]},
+                headers={"X-API-Key": "sk-test-key"},
+            )
+            assert resp.status_code == 502
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
+
+    from hey_jude.services.audit import verify_chain
+    path = str(tmp_path / "audit.jsonl")
+    assert verify_chain(path).ok
+    with open(path) as handle:
+        record = json.loads(handle.readline())
+    assert record["status"] == "error"
+    assert record["error"] == "Anonymization validation failed"
