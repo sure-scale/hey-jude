@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from hey_jude.config import Settings, settings as default_settings
 from hey_jude.redis_client import RedisClient
 from hey_jude.routes import router
+from hey_jude.services.known_entities import load_known_entities
 
 
 @asynccontextmanager
@@ -17,6 +18,10 @@ async def lifespan(app: FastAPI):
         app.state.anonymization_prompt = prompt_path.read_text()
     else:
         app.state.anonymization_prompt = None
+    known_entities_path = app.state.settings.known_entities_path
+    app.state.known_entities = (
+        load_known_entities(known_entities_path) if known_entities_path else []
+    )
     yield
     await app.state.redis_client.close()
 

@@ -1,9 +1,9 @@
 import dotenv
 dotenv.load_dotenv()
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -48,6 +48,34 @@ class Settings(BaseSettings):
     safety_net_strictness: Literal["off", "warn", "strict"] = "warn"
     document_unreadable_action: Literal["reject", "warn", "skip"] = "reject"
     anonymization_prompt_path: str = "prompts/anonymize.txt"
+
+    custom_recognizers_path: str | None = None
+    known_entities_path: str | None = None
+
+    # Populated from custom_recognizers_path; not read from the environment.
+    custom_recognizer_specs: list[Any] = Field(default_factory=list, exclude=True)
+
+    @model_validator(mode="after")
+    def _load_custom_recognizers(self) -> "Settings":
+        if not self.custom_recognizers_path:
+            return self
+
+        from hey_jude.services.recognizers import load_recognizer_specs
+
+        specs = load_recognizer_specs(self.custom_recognizers_path)
+        self.custom_recognizer_specs = specs
+
+        # Custom entity types must be allow-listed for the analyzer to surface
+        # them, and need a substitution strategy for mechanical mode.
+        entities = list(self.presidio_entities)
+        strategies = dict(self.entity_strategies)
+        for spec in specs:
+            if spec.entity_type not in entities:
+                entities.append(spec.entity_type)
+            strategies.setdefault(spec.entity_type, spec.strategy)
+        self.presidio_entities = entities
+        self.entity_strategies = strategies
+        return self
 
 
 settings = Settings()

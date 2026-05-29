@@ -3,6 +3,7 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from hey_jude.config import Settings
 from hey_jude.models import DetectedEntity
+from hey_jude.services.recognizers import build_recognizers
 
 _engine: AnalyzerEngine | None = None
 
@@ -33,10 +34,12 @@ def _get_engine() -> AnalyzerEngine:
 
 async def detect_entities(text: str, settings: Settings) -> list[DetectedEntity]:
     engine = _get_engine()
+    ad_hoc_recognizers = build_recognizers(settings.custom_recognizer_specs)
     results = engine.analyze(
         text=text,
         entities=settings.presidio_entities,
         language="en",
+        ad_hoc_recognizers=ad_hoc_recognizers or None,
     )
     entities = []
     for result in results:

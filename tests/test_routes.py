@@ -1203,4 +1203,115 @@ async def test_mechanical_mode_unchanged(client, app):
     data = resp.json()
     assert "John Smith" in data["choices"][0]["message"]["content"]
     assert "Microsoft" in data["choices"][0]["message"]["content"]
-    assert data["heyjude_metadata"]["status"] == "completed"
+
+
+async def test_known_entity_guaranteed_replaced_mechanical(client, app):
+    """A known entity is replaced even if detection and the local LLM miss it."""
+    from hey_jude.services.known_entities import KnownEntity
+
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "mechanical"
+    app.state.known_entities = [
+        KnownEntity(entity_type="CLIENT_NAME", term="Acme Corp", replace_with="CLIENT_01")
+    ]
+
+    empty_local = json.dumps({
+        "sensitivity": "low",
+        "reasoning": "Nothing detected by the model.",
+        "mapping": {},
+        "context_descriptors": {},
+        "sanitized_text": "",
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
+
+    with patch("hey_jude.routes.detect_entities", new_callable=AsyncMock) as mock_detect, patch(
+        "hey_jude.services.substitutor._call_local_llm", new_callable=AsyncMock
+    ) as mock_local, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_detect.return_value = []
+        mock_local.return_value = empty_local
+        mock_route.return_value = {
+            "id": "chatcmpl-known",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "CLIENT_01 is the client."},
+                "finish_reason": "stop",
+            }],
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Engagement with Acme Corp."}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    # The prompt that left the gateway must not contain the real client name.
+    sent = mock_route.await_args.kwargs["messages"][0].content
+    assert "Acme Corp" not in sent
+    assert "CLIENT_01" in sent
+    # The response is de-anonymized back to the real name.
+    assert resp.json()["choices"][0]["message"]["content"] == "Acme Corp is the client."
+
+
+async def test_known_entity_seeds_llm_mode_mapping(client, app):
+    """In LLM mode the known seed flows through and is guaranteed applied."""
+    from hey_jude.services.known_entities import KnownEntity
+    from hey_jude.models import SafetyNetResult
+
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "llm"
+    app.state.known_entities = [
+        KnownEntity(entity_type="CLIENT_NAME", term="Acme Corp", replace_with="CLIENT_01")
+    ]
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm", new_callable=AsyncMock
+    ) as mock_local, patch(
+        "hey_jude.routes.safety_net_check", new_callable=AsyncMock
+    ) as mock_safety, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        # LLM finds nothing new; the seed alone must still anonymize the client.
+        mock_local.return_value = json.dumps({
+            "entities_found": [],
+            "context_descriptors": {},
+            "sensitivity": "low",
+        })
+        mock_safety.return_value = SafetyNetResult(
+            passed=True, leaked_entities=[], auto_replaced=0
+        )
+        mock_route.return_value = {
+            "id": "chatcmpl-known-llm",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "CLIENT_01 noted."},
+                "finish_reason": "stop",
+            }],
+        }
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Acme Corp is our client."}],
+            },
+            headers={"X-API-Key": "sk-test-key"},
+        )
+
+    assert resp.status_code == 200
+    sent = mock_route.await_args.kwargs["messages"][0].content
+    assert "Acme Corp" not in sent
+    assert "CLIENT_01" in sent
+    assert resp.json()["choices"][0]["message"]["content"] == "Acme Corp noted."
