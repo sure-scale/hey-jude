@@ -6,7 +6,13 @@ from httpx import ASGITransport, AsyncClient
 
 from hey_jude.main import create_app
 from hey_jude.config import Settings
-from hey_jude.models import ChatMessage, DetectedEntity, SubstitutionResult
+from hey_jude.models import (
+    AnonymizationResult,
+    ChatMessage,
+    DetectedEntity,
+    FoundEntity,
+    SubstitutionResult,
+)
 
 
 @pytest.fixture
@@ -1318,11 +1324,11 @@ async def test_known_entity_seeds_llm_mode_mapping(client, app):
 
 
 def _audit_settings(tmp_path, **overrides):
+    overrides.setdefault("anonymization_mode", "mechanical")
     return Settings(
         redis_url="redis://localhost:6379/1",
         redis_ttl_seconds=60,
         api_key="sk-test-key",
-        anonymization_mode="mechanical",
         audit_enabled=True,
         audit_destination=str(tmp_path / "audit.jsonl"),
         audit_rotation="none",
@@ -1443,3 +1449,67 @@ async def test_audit_record_written_on_pipeline_error(tmp_path):
         record = json.loads(handle.readline())
     assert record["status"] == "error"
     assert record["error"] == "Anonymization validation failed"
+
+
+async def test_audit_records_per_entity_decisions_in_llm_mode(tmp_path):
+    settings = _audit_settings(
+        tmp_path, anonymization_mode="llm", safety_net_strictness="off"
+    )
+    app = create_app(settings)
+    agen = _audit_client(app)
+    client = await agen.__anext__()
+    try:
+        with patch(
+            "hey_jude.routes.anonymize_messages", new_callable=AsyncMock
+        ) as mock_anon, patch(
+            "hey_jude.routes.route_completion", new_callable=AsyncMock
+        ) as mock_route:
+            mock_anon.return_value = AnonymizationResult(
+                mapping={"Acme Corp": "COMPANY_01"},
+                reverse_mapping={"COMPANY_01": "Acme Corp"},
+                context_descriptors={},
+                sanitized_messages=[ChatMessage(role="user", content="COMPANY_01 matter")],
+                sensitivity="low",
+                entities_found=[
+                    FoundEntity(
+                        text="Acme Corp",
+                        entity_type="ORGANIZATION",
+                        action="replace",
+                        replacement="COMPANY_01",
+                        reason="real company name",
+                    ),
+                    FoundEntity(
+                        text="the Agreement",
+                        entity_type="MISC",
+                        action="keep",
+                        replacement=None,
+                        reason="generic defined term",
+                    ),
+                ],
+            )
+            mock_route.return_value = {
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}
+                ]
+            }
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o",
+                      "messages": [{"role": "user", "content": "Acme Corp matter"}]},
+                headers={"X-API-Key": "sk-test-key"},
+            )
+            assert resp.status_code == 200
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await agen.__anext__()
+
+    path = str(tmp_path / "audit.jsonl")
+    with open(path) as handle:
+        record = json.loads(handle.readline())
+    # metadata tier: type/action/reason recorded, raw entity text withheld
+    assert record["decisions"] == [
+        {"entity_type": "ORGANIZATION", "action": "replace", "reason": "real company name"},
+        {"entity_type": "MISC", "action": "keep", "reason": "generic defined term"},
+    ]
+    assert "Acme Corp" not in json.dumps(record["decisions"])

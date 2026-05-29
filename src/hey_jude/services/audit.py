@@ -52,6 +52,10 @@ class AuditRecord:
     safety_net_passed: bool | None = None
     entities_detected: int | None = None
     sensitivity: str | None = None
+    # Per-entity anonymization decisions. At the `metadata` content level each
+    # entry carries entity_type/action/reason only (no raw entity text); at
+    # `full` it may also include the original text and its replacement.
+    decisions: Any = None
     error: str | None = None
     external_latency_ms: int | None = None
     total_ms: int | None = None

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from hey_jude.cli import main as cli_main
-from hey_jude.models import ChatMessage
-from hey_jude.routes import _record_input, _record_output
+from hey_jude.models import ChatMessage, FoundEntity
+from hey_jude.routes import _record_decisions, _record_input, _record_output
 from hey_jude.services.audit import (
     GENESIS,
     AuditLog,
@@ -177,6 +177,61 @@ def test_full_tier_stores_input_and_output():
     _record_output(rec, _msgs(), "full")
     assert rec.input == [{"role": "user", "content": "Acme Corp client matter"}]
     assert rec.output == [{"role": "user", "content": "Acme Corp client matter"}]
+
+
+# --- per-entity decisions ---
+
+
+def _found():
+    return [
+        FoundEntity(
+            text="Acme Corp",
+            entity_type="ORGANIZATION",
+            action="replace",
+            replacement="COMPANY_01",
+            reason="real company name",
+        ),
+        FoundEntity(
+            text="the Agreement",
+            entity_type="MISC",
+            action="keep",
+            replacement=None,
+            reason="generic defined term",
+        ),
+    ]
+
+
+def test_decisions_metadata_tier_omits_raw_text():
+    rec = _record()
+    _record_decisions(rec, _found(), "metadata")
+    assert rec.decisions == [
+        {"entity_type": "ORGANIZATION", "action": "replace", "reason": "real company name"},
+        {"entity_type": "MISC", "action": "keep", "reason": "generic defined term"},
+    ]
+    serialized = str(rec.decisions)
+    assert "Acme Corp" not in serialized
+    assert "COMPANY_01" not in serialized
+
+
+def test_decisions_full_tier_includes_text_and_replacement():
+    rec = _record()
+    _record_decisions(rec, _found(), "full")
+    assert rec.decisions[0] == {
+        "entity_type": "ORGANIZATION",
+        "action": "replace",
+        "reason": "real company name",
+        "text": "Acme Corp",
+        "replacement": "COMPANY_01",
+    }
+
+
+def test_decisions_survive_the_hash_chain(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    rec = _record()
+    _record_decisions(rec, _found(), "metadata")
+    body = AuditLog(destination=str(path)).append(rec, _now())
+    assert body["decisions"][0]["action"] == "replace"
+    assert verify_chain(str(path)).ok
 
 
 # --- CLI ---
