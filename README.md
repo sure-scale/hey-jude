@@ -115,7 +115,9 @@ Hey Jude extracts text from common legal document formats before anonymization, 
 
 ### Audit Logging
 
-Set `AUDIT_ENABLED=true` to record one envelope per request: timestamps, latency, which external model it was routed to, entity count, sensitivity, safety-net result, and SHA-256 digests of the input and the anonymized output. This is the artifact that proves anonymization happened and that only PII-free content left the network.
+Set `AUDIT_ENABLED=true` to record one envelope per request: timestamps, latency, which external model it was routed to, entity count, sensitivity, safety-net result, the per-entity anonymization decisions, and SHA-256 digests of the input and the anonymized output. This is the artifact that proves anonymization happened and that only PII-free content left the network.
+
+**Per-entity decisions.** In LLM mode each record carries a `decisions` list — what the anonymizer found and what it did to it (`action` is `replace`, `keep`, or `generalize`) with the reason. At the default `metadata` level this stores `entity_type`, `action`, and `reason` only, never the raw entity text; `full` additionally records the original text and its replacement. This is the per-matter "what did we send, what did we withhold, why" trail for discovery and malpractice defense.
 
 **Tamper-evident.** The log is hash-chained JSONL: each record carries the hash of the previous one, so editing or deleting any historical record breaks the chain from that point on — detectable even by someone with write access. Verify a segment at any time:
 

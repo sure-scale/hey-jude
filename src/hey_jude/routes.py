@@ -179,6 +179,27 @@ def _record_output(record: AuditRecord, messages: list[ChatMessage], level: str)
         record.output = _messages_payload(messages)
 
 
+def _record_decisions(record: AuditRecord, entities: list, level: str) -> None:
+    """Persist the anonymizer's per-entity decisions.
+
+    Always records entity_type/action/reason. Raw entity text and its
+    replacement are only included at the `full` content level so the default
+    log never becomes a store of client PII.
+    """
+    decisions = []
+    for entity in entities:
+        decision = {
+            "entity_type": entity.entity_type,
+            "action": entity.action,
+            "reason": entity.reason,
+        }
+        if level == "full":
+            decision["text"] = entity.text
+            decision["replacement"] = entity.replacement
+        decisions.append(decision)
+    record.decisions = decisions
+
+
 def _safe_error(exc: Exception) -> str:
     # HTTPException details are operator-facing strings (no client PII); other
     # exceptions are recorded by type only to avoid leaking content into the log.
@@ -316,6 +337,10 @@ async def _gateway_pipeline(
         all_entities_count = len([
             e for e in anon_result.entities_found if e.action != "keep"
         ]) + len(set(known_seed.values()))
+        if record is not None:
+            _record_decisions(
+                record, anon_result.entities_found, settings.audit_content_level
+            )
     else:
         all_entities = []
         for msg in messages:
