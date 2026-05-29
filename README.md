@@ -193,6 +193,8 @@ Available models (same endpoint, swap `LOCAL_LLM_MODEL`):
 
 Any model deployed to your Azure AI project that serves an OpenAI-compatible chat completions endpoint will work. The gateway sends requests to `{LOCAL_LLM_URL}/chat/completions` with both `api-key` and `Authorization: Bearer` headers.
 
+**Prompt caching.** The anonymization prompt (`prompts/anonymize.txt`) keeps its large static block — task, classification instructions, and output schema — first, and the per-request variables (the existing placeholder mapping and the message text) last. That fixed prefix is identical on every request, so providers with automatic prompt caching (Azure OpenAI, Anthropic, Gemini) reuse it instead of re-billing the instructions each call, cutting input-token cost and latency on the hot path. If you edit the template, keep the variables at the end or the cached prefix is lost.
+
 ### E2E Testing
 
 The end-to-end test uses three models:

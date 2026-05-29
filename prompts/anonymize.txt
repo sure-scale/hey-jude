@@ -1,15 +1,7 @@
 <task>
-Analyze this text and identify all entities that could be personally identifying
-information (PII). For each entity, decide the appropriate action.
+Analyze the supplied text and identify all entities that could be personally
+identifying information (PII). For each entity, decide the appropriate action.
 </task>
-
-<existing_mapping>
-{existing_mapping}
-</existing_mapping>
-
-<text>
-{message_text}
-</text>
 
 <instructions>
 For each entity you find, classify it and decide an action:
@@ -57,3 +49,11 @@ Return ONLY a JSON object:
   "sensitivity": "low|high"
 }
 </instructions>
+
+<existing_mapping>
+{existing_mapping}
+</existing_mapping>
+
+<text>
+{message_text}
+</text>
