@@ -74,7 +74,7 @@ For each successful anonymization result:
 
 ## Step 5: Evaluate (you are the judge)
 
-For each test case, evaluate the anonymization on three criteria (0-10 each):
+For each test case, evaluate the anonymization on five criteria (0-10 each):
 
 ### PII Leak Detection (score 0-10)
 Scan the sanitized text for any real PII that survived. Check: names, companies, emails, phones, addresses, SSNs, account numbers. Score 10 = no leaks. Score 0 = major PII in plaintext.
@@ -85,6 +85,24 @@ Does the sanitized text read logically? Are placeholders consistent and descript
 ### Completeness (score 0-10)
 Did the anonymizer catch ALL significant PII? Compare detected entities against what's visible in the original. Missing a name or email is worse than missing a generic title. Score 10 = every significant entity caught. Score 0 = most missed.
 
+### Inference Resistance (score 0-10)
+This is distinct from PII Leak Detection: even when no literal PII string survives, the real entity may still be **inferable** from surrounding context (e.g. "their suite of bundled office products and world-scale cloud infrastructure" → Microsoft).
+
+Run a **blind re-identification attack**. Spawn a separate sub-agent (or reason in a fresh frame) that sees ONLY the sanitized text and the context descriptors — NOT the original text and NOT the mapping. Its job: guess the real-world identity behind each placeholder, with a confidence 0.0–1.0.
+
+Then score against the truth yourself (you have the mapping). A guess that matches the true entity at confidence ≥ 0.6 is a successful re-identification — a real privacy leak. Note: rich, specific context descriptors raise coherence but also raise inference risk; the tension is intentional.
+
+Score 10 = nothing re-identifiable above chance. Score 0 = most entities re-identified with high confidence. Suggested: `10 × (1 − reidentified / total_entities)`.
+
+Beware giving the attacker the answer key: if the agent can see the original or mapping, the score is meaningless.
+
+### Precision / Over-redaction (score 0-10)
+The inverse of Completeness. Did the anonymizer redact things that are NOT PII — common words, generic legal terms ("Merger Agreement", "Board of Directors"), boilerplate, non-identifying dates/figures? Over-redaction destroys the text's usefulness and is a real failure even though it leaks nothing. Inspect the mapping keys: count genuine PII vs false positives.
+
+Score 10 = only real PII redacted. Score 0 = heavy over-redaction of non-PII. List the false-positive redactions.
+
+> Partial/format-leak detection (surviving email domains, phone last-4, surname tokens) and end-to-end **utility preservation** (does the destination model answer the anonymized request as well as the original?) require destination round-trips and are measured by the automated harness in `tests/e2e/test_gemini_anonymization.py`, not this judge-only flow.
+
 ## Step 6: Report results
 
 Print a summary table for each test case:
@@ -93,7 +111,9 @@ Print a summary table for each test case:
 TEST: {name}
   Entities: {count} found, {replace_count} replaced, {keep_count} kept
   Leaks: {leak_list or "none"}
-  Scores: PII={pii}/10  Coherence={coherence}/10  Completeness={completeness}/10  Overall={avg}/10
+  Re-identified: {reid_list or "none"}
+  Over-redacted: {false_positive_list or "none"}
+  Scores: PII={pii}/10  Coherence={coherence}/10  Completeness={completeness}/10  Inference={inference}/10  Precision={precision}/10  Overall={avg}/10
 ```
 
 Then print aggregate summary:
@@ -103,7 +123,9 @@ SUMMARY: {passed}/{total} cases evaluated
   Average PII Leak Detection: {avg}/10
   Average Semantic Coherence: {avg}/10
   Average Completeness: {avg}/10
+  Average Inference Resistance: {avg}/10
+  Average Precision: {avg}/10
   Overall Average: {avg}/10
 ```
 
-Flag any case scoring below 6 on any criterion as needing attention.
+Flag any case scoring below 6 on any criterion as needing attention. Treat any case with a re-identification at confidence ≥ 0.6 as a failure regardless of its other scores.
