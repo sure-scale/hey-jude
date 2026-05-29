@@ -1,0 +1,33 @@
+# Custom Presidio recognizers — domain-specific PII that default NER misses.
+# Point CUSTOM_RECOGNIZERS_PATH at a copy of this file.
+#
+# Each recognizer adds a new entity type detected by regex. It runs in the
+# Presidio safety net (LLM mode) and as a detection strategy (mechanical mode).
+#
+# Fields:
+#   name         required. Identifier for the recognizer.
+#   entity_type  required. The label applied to matches (also the placeholder prefix).
+#   patterns     required. One or more {regex, score} pairs. score is 0..1 confidence.
+#   context      optional. Words near a match that raise confidence.
+#   strategy     optional. Mechanical-mode substitution: placeholder (default) or deterministic.
+
+- name: matter_number
+  entity_type: MATTER_NUMBER
+  patterns:
+    - regex: '\bM-\d{6}\b'
+      score: 0.9
+  context: ["matter", "file no", "ref"]
+
+- name: opposing_counsel_ref
+  entity_type: OPPOSING_COUNSEL
+  patterns:
+    # e.g. "opp: J. Doe" or "counsel for Respondent: Smith & Co"
+    - regex: '\b(?:opp|counsel)\b[:\s].{1,40}'
+      score: 0.6
+  context: ["respondent", "defendant", "plaintiff"]
+
+- name: client_code
+  entity_type: CLIENT_CODE
+  patterns:
+    - regex: '\bC\d{4}-[A-Z]{2,4}\b'
+      score: 0.85

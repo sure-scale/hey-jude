@@ -19,6 +19,7 @@ from hey_jude.models import (
 from hey_jude.services.anonymizer import anonymize_messages
 from hey_jude.services.detector import detect_entities
 from hey_jude.services.documents import DocumentProcessingError, content_to_text
+from hey_jude.services.known_entities import seed_mapping
 from hey_jude.services.mapper import reverse_map, reverse_map_text
 from hey_jude.services.router import route_completion
 from hey_jude.services.safety_net import safety_net_check
@@ -167,12 +168,16 @@ async def _run_gateway_completion(
     except Exception:
         raise HTTPException(status_code=503, detail="Redis unavailable")
 
+    known_entities = getattr(request.app.state, "known_entities", [])
+    known_seed = seed_mapping(messages, known_entities, settings)
+
     if settings.anonymization_mode == "llm":
         prompt_template = getattr(request.app.state, "anonymization_prompt", None)
 
         try:
             anon_result = await anonymize_messages(
                 messages, settings, prompt_template=prompt_template,
+                existing_mapping=known_seed,
             )
         except httpx.RequestError:
             raise HTTPException(status_code=503, detail="Local LLM unavailable")
@@ -202,7 +207,7 @@ async def _run_gateway_completion(
         )
         all_entities_count = len([
             e for e in anon_result.entities_found if e.action != "keep"
-        ])
+        ]) + len(set(known_seed.values()))
     else:
         all_entities = []
         for msg in messages:
@@ -213,7 +218,8 @@ async def _run_gateway_completion(
 
         try:
             sub_result = await substitute_entities(
-                messages, all_entities, settings, force_local_pass=True
+                messages, all_entities, settings, force_local_pass=True,
+                forced_mapping=known_seed,
             )
         except httpx.RequestError:
             raise HTTPException(status_code=503, detail="Local LLM unavailable")
@@ -221,7 +227,7 @@ async def _run_gateway_completion(
             raise HTTPException(
                 status_code=502, detail="Anonymization validation failed"
             )
-        all_entities_count = len(all_entities)
+        all_entities_count = len(all_entities) + len(set(known_seed.values()))
 
     if sub_result.needs_clarification and settings.allow_clarification_requests:
         await redis_client.store_request(

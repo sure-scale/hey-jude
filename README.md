@@ -91,8 +91,20 @@ The defaults work out of the box for most users.
 | `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
 | `SAFETY_NET_STRICTNESS` | `warn` | `warn` (auto-fix), `strict` (reject), or `off` |
 | `DOCUMENT_UNREADABLE_ACTION` | `reject` | What to do when an uploaded file has no readable text layer: `reject`, `warn`, or `skip` |
+| `CUSTOM_RECOGNIZERS_PATH` | *(unset)* | Path to a YAML/JSON file of custom Presidio regex recognizers |
+| `KNOWN_ENTITIES_PATH` | *(unset)* | Path to a YAML/JSON known-entity dictionary |
 
 When running through Docker Compose, the service automatically uses `host.docker.internal` so the container can reach Ollama on your Mac.
+
+### Domain-Specific Detection
+
+Default NER misses the abbreviated, inconsistent names common in legal text ("Call w/ J. Smith re: Acme merger"). Two opt-in mechanisms close the gap. Templates live in [`examples/`](examples/).
+
+**Custom recognizers** (`CUSTOM_RECOGNIZERS_PATH`) add regex-based entity types — matter numbers, client codes, opposing-counsel formats. They run in the Presidio safety net and as a mechanical-mode detection strategy.
+
+**Known-entity dictionary** (`KNOWN_ENTITIES_PATH`) is a firm-maintained list of the names you must never leak — clients, personnel, matter names. Listed entities are matched case-insensitively and **guaranteed replaced before the prompt reaches the LLM**, so a critical name never depends on the model noticing it. All spelling variants (`term` + `aliases`) collapse to one placeholder.
+
+By default an auto-numbered placeholder (e.g. `CLIENT_NAME_01`) is assigned per request. Set `replace_with` on an entry to fix its placeholder so it stays identical across every request.
 
 Hey Jude extracts text from common legal document formats before anonymization, including text PDFs, DOCX, HTML, EML, TXT, Markdown, and RTF. Scanned PDFs, flattened PDFs, and images are not OCRed yet; by default they are rejected so unreadable content is not forwarded without anonymization.
 

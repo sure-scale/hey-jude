@@ -1,0 +1,28 @@
+# Known-entity dictionary — firm-maintained lists of the names you must never leak.
+# Point KNOWN_ENTITIES_PATH at a copy of this file.
+#
+# Every listed entity is matched (case-insensitive, word-boundary) and replaced
+# BEFORE the prompt reaches the LLM, so detection never depends on the model
+# noticing. All variants of one entity collapse to a single placeholder.
+#
+# Fields:
+#   entity_type   required. Placeholder prefix when replace_with is not set.
+#   term          required. Canonical name.
+#   aliases       optional. Other spellings/abbreviations of the same entity.
+#   replace_with  optional. Fixes the exact placeholder. Set this for a stable
+#                 alias that is identical across every request; otherwise an
+#                 auto-numbered placeholder (e.g. CLIENT_NAME_01) is assigned
+#                 per request.
+
+- entity_type: CLIENT_NAME
+  term: "Acme Corporation"
+  aliases: ["Acme Corp", "Acme", "ACM"]   # acquired BigCo 2024, still active
+  replace_with: "CLIENT_01"
+
+- entity_type: PERSONNEL
+  term: "Jonathan Smith"
+  aliases: ["J. Smith", "Smith, John", "Jon Smith"]
+
+- entity_type: MATTER_NAME
+  term: "Project Nightingale"
+  aliases: ["Nightingale"]
