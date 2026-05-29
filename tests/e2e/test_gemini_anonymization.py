@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from hey_jude.config import Settings
 from hey_jude.models import ChatMessage
 from hey_jude.services.anonymizer import anonymize_messages
+from hey_jude.services.known_entities import load_known_entities, seed_mapping
 
 from fixtures.legal_docs.download import load_test_cases
 
@@ -156,6 +157,20 @@ async def evaluate_anonymization(
 # --- Inline test cases ---
 
 LEGAL_TEXTS = [
+    {
+        # Exercises the known-entity dictionary (alias matching: ACM, J. Smith,
+        # Nightingale) and a custom MATTER_NUMBER recognizer from examples/.
+        "name": "Firm Watchlist (dictionary + custom recognizer)",
+        "messages": [
+            ChatMessage(
+                role="user",
+                content=(
+                    "Summarize the status call: ACM and J. Smith discussed "
+                    "Project Nightingale on matter M-123456. Flag any blockers."
+                ),
+            ),
+        ],
+    },
     {
         "name": "Merger Agreement Excerpt",
         "messages": [
@@ -315,10 +330,15 @@ async def run_test_case(
     template: str,
     run_eval: bool,
     using_ollama: bool = True,
+    known_entities: list | None = None,
 ) -> dict:
     """Run a single test case. Returns result dict with pass/fail/scores."""
     name = test_case["name"]
     messages = [ChatMessage(role=m.role, content=m.content) for m in test_case["messages"]]
+
+    # Mirror the gateway: seed the known-entity dictionary before the LLM pass so
+    # firm-listed names are guaranteed-replaced regardless of what the model finds.
+    known_seed = seed_mapping(messages, known_entities or [], settings)
 
     # Ensure ollama is healthy before each test (skip for cloud endpoints)
     if using_ollama and not await check_ollama():
@@ -330,7 +350,9 @@ async def run_test_case(
             return {"name": name, "status": "error", "error": "Ollama not recovered"}
 
     try:
-        result = await anonymize_messages(messages, settings, prompt_template=template)
+        result = await anonymize_messages(
+            messages, settings, prompt_template=template, existing_mapping=known_seed,
+        )
     except Exception as e:
         print_separator()
         print(f"TEST: {name}")
@@ -390,7 +412,14 @@ async def main():
         print("Usage: GEMINI_API_KEY=your-key python tests/e2e/test_gemini_anonymization.py")
         return False
 
-    settings = Settings(anonymization_mode="llm")
+    examples_dir = Path(__file__).resolve().parent.parent.parent / "examples"
+    settings = Settings(
+        anonymization_mode="llm",
+        custom_recognizers_path=str(examples_dir / "custom_recognizers.example.yaml"),
+        known_entities_path=str(examples_dir / "known_entities.example.yaml"),
+    )
+    known_entities = load_known_entities(settings.known_entities_path)
+    print(f"  Known entities loaded: {len(known_entities)}")
 
     # Only require ollama if using local endpoint
     using_ollama = "localhost" in settings.local_llm_url or "127.0.0.1" in settings.local_llm_url
@@ -429,7 +458,10 @@ async def main():
     for i, test_case in enumerate(LEGAL_TEXTS):
         if i > 0:
             await asyncio.sleep(2)
-        r = await run_test_case(test_case, settings, template, run_eval=True, using_ollama=using_ollama)
+        r = await run_test_case(
+            test_case, settings, template, run_eval=True,
+            using_ollama=using_ollama, known_entities=known_entities,
+        )
         results.append(r)
 
     # Summary
