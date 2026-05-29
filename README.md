@@ -101,6 +101,19 @@ The defaults work out of the box for most users.
 
 When running through Docker Compose, the service automatically uses `host.docker.internal` so the container can reach Ollama on your Mac.
 
+### Choosing Models
+
+Hey Jude uses **two separate models** for two different jobs, and you size them independently:
+
+| Role | Setting | Job | Pick for |
+|------|---------|-----|----------|
+| Anonymizer | `LOCAL_LLM_MODEL` (+ `LOCAL_LLM_URL`) | Classify entities and emit placeholder JSON | Speed and cost — a small, fast model is enough |
+| Destination | `EXTERNAL_LLM_MODEL` | Do the actual legal work on the already-anonymized prompt | Capability — your strongest model |
+
+The anonymizer's task is narrow and structured (find PII, output a fixed JSON schema), so it does **not** need a frontier model. Putting the cheapest model that holds classification quality here cuts cost and latency on every request, because the anonymizer runs once per message before anything reaches the destination. Reserve the expensive, capable model for `EXTERNAL_LLM_MODEL`, which never sees raw PII anyway.
+
+The two run on independent endpoints and providers — e.g. a small Azure or Ollama model for anonymization and Gemini, Anthropic, or OpenAI for the destination — so you tune the cost/quality trade-off on each without touching the other.
+
 ### Domain-Specific Detection
 
 Default NER misses the abbreviated, inconsistent names common in legal text ("Call w/ J. Smith re: Acme merger"). Two opt-in mechanisms close the gap. Templates live in [`examples/`](examples/).
