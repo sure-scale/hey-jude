@@ -304,6 +304,40 @@ def _guess_matches_original(guess: str, original: str) -> bool:
     return bool(g_tokens & o_tokens)
 
 
+def _parse_guesses(raw: str) -> list[dict] | None:
+    """Parse the attacker's guess list, tolerating malformed/truncated JSON.
+
+    Large attacker responses sometimes come back truncated mid-string, which
+    breaks a strict json.loads. Rather than discard the whole attack, fall back
+    to extracting each complete top-level guess object individually so a cut-off
+    tail only costs the last guess. Returns None only when nothing is parseable.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    try:
+        return json.loads(text).get("guesses", [])
+    except json.JSONDecodeError:
+        pass
+
+    # Salvage: each guess object is flat (no nested braces), so match them one by
+    # one and parse independently; skip any fragment that is itself truncated.
+    salvaged: list[dict] = []
+    for m in re.finditer(r"\{[^{}]*\}", text):
+        try:
+            obj = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            continue
+        if "placeholder" in obj:
+            salvaged.append(obj)
+
+    if salvaged:
+        print(f"    INFERENCE: salvaged {len(salvaged)} guesses from malformed JSON")
+        return salvaged
+    return None
+
+
 async def run_inference_attack(
     sanitized_text: str,
     context_descriptors: dict[str, str],
@@ -325,13 +359,17 @@ async def run_inference_attack(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
+            max_tokens=8192,
         )
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        guesses = json.loads(text).get("guesses", [])
     except Exception as e:
         print(f"    INFERENCE ERROR: {type(e).__name__}: {e}")
+        return None
+
+    guesses = _parse_guesses(raw)
+    if guesses is None:
+        # Unparseable even after salvage. Treat as a no-result rather than a
+        # silent pass — a missing attack must not look like perfect resistance.
+        print("    INFERENCE: attacker output unparseable (no guesses salvaged)")
         return None
 
     # Index guesses by placeholder for lookup against the truth table.
@@ -375,60 +413,94 @@ async def run_inference_attack(
 # name was swapped. These are partial re-identifiers. This is pure string work —
 # no model needed — and runs on every case.
 
-_PARTIAL_LEAK_STOPWORDS = _INFERENCE_STOPWORDS | {
+_NUMBER_WORDS = {
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty",
+    "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion",
+    "dollar", "dollars", "cent", "cents",
+}
+
+_PARTIAL_LEAK_STOPWORDS = _INFERENCE_STOPWORDS | _NUMBER_WORDS | {
     "north", "south", "east", "west", "street", "avenue", "ave", "road", "suite",
     "new", "york", "san", "los", "department", "office", "board", "directors",
+    "plaza", "tower", "court", "county", "superior", "district", "circuit",
+    "state", "city", "building", "floor", "boulevard", "blvd", "drive", "lane",
+    "place", "square", "center", "centre", "park",
 }
 
 
-def _fragments_for(original: str) -> list[tuple[str, str]]:
-    """Derive identifying fragments of an original PII value.
+def _entity_fragment_kind(entity_type: str) -> str | None:
+    """Map an entity type to the kind of fragment worth checking, or None.
 
-    Returns (kind, fragment) pairs. Fragments are kept long/specific enough that
-    a coincidental match in unrelated text is unlikely.
+    Only types whose fragments are genuinely identifying are fragmented. Crucially
+    this EXCLUDES addresses, locations, dates, monetary amounts, durations, titles,
+    and free-form IDs (zip/matter/invoice), whose tokens are common English words
+    ("Dollars", "County", "Plaza") or coincidental digit runs and would produce
+    false positives. Those still get the exact-substring leak check elsewhere.
     """
+    t = (entity_type or "").casefold()
+    if "email" in t:
+        return "email"
+    # True numeric identifiers only — deliberately NOT zip/matter/invoice/date.
+    if any(k in t for k in ("phone", "ssn", "social", "ein", "tax_id", "account", "routing", "card")):
+        return "digits"
+    if any(k in t for k in ("person", "people", "name")) or "org" in t or "company" in t:
+        return "name"
+    return None
+
+
+def _fragments_for(text: str, kind: str) -> list[tuple[str, str]]:
+    """Derive (fragment-kind, fragment) pairs from an entity of the given kind."""
     fragments: list[tuple[str, str]] = []
-    text = original.strip()
-
-    # Email -> domain (the part after @, which often survives naive replacement).
-    email = re.search(r"[\w.+-]+@([\w-]+\.[\w.-]+)", text)
-    if email:
-        fragments.append(("email-domain", email.group(1)))
-
-    # Long digit runs -> last 4 (SSN/EIN/phone/account tails).
-    digits = re.sub(r"\D", "", text)
-    if len(digits) >= 7:
-        fragments.append(("digits-last4", digits[-4:]))
-
-    # Multi-token names/orgs -> each distinctive token (surname left behind, etc.).
-    if not email:
-        for tok in re.findall(r"[A-Za-z][A-Za-z'-]{3,}", text):
+    if kind == "email":
+        m = re.search(r"[\w.+-]+@([\w-]+\.[\w.-]+)", text)
+        if m:
+            fragments.append(("email-domain", m.group(1)))
+    elif kind == "digits":
+        digits = re.sub(r"\D", "", text)
+        last4 = digits[-4:]
+        # Skip 4-digit years so a date-like tail doesn't match coincidentally.
+        if len(digits) >= 7 and not (1900 <= int(last4) <= 2099):
+            fragments.append(("digits-last4", last4))
+    elif kind == "name":
+        # Proper-noun tokens only (surname/distinctive org word left behind).
+        for tok in re.findall(r"[A-Z][A-Za-z'-]{3,}", text):
             if tok.casefold() not in _PARTIAL_LEAK_STOPWORDS:
                 fragments.append(("token", tok))
-
     return fragments
 
 
-def detect_partial_leaks(mapping: dict[str, str], sanitized_text: str) -> list[dict]:
-    """Flag identifying fragments of replaced originals that survive verbatim.
+def detect_partial_leaks(entities: list, sanitized_text: str) -> list[dict]:
+    """Flag identifying fragments of replaced entities that survive verbatim.
 
-    Skips fragments that also appear inside the chosen replacement/placeholder —
-    those are intended, not leaks (e.g. a placeholder that deliberately keeps a
-    generic token).
+    Type-aware: only person/org names, email domains and true numeric identifiers
+    are fragmented (see _entity_fragment_kind). Fragments that appear inside the
+    entity's own replacement are intended, not leaks. Deduplicated by fragment so
+    a repeated token ("Thousand") is reported at most once.
     """
     hay = sanitized_text
     hay_digits = re.sub(r"\D", "", sanitized_text)
     leaks: list[dict] = []
-    for original, replacement in mapping.items():
-        for kind, frag in _fragments_for(original):
-            if frag.casefold() in (replacement or "").casefold():
-                continue  # part of the intended placeholder, not a leak
-            if kind == "digits-last4":
+    seen: set[tuple[str, str]] = set()
+    for e in entities:
+        if getattr(e, "action", None) not in ("replace", "generalize"):
+            continue
+        kind = _entity_fragment_kind(getattr(e, "entity_type", ""))
+        if not kind:
+            continue
+        replacement = (getattr(e, "replacement", "") or "").casefold()
+        for fkind, frag in _fragments_for(e.text, kind):
+            key = (fkind, frag.casefold())
+            if key in seen or frag.casefold() in replacement:
+                continue
+            if fkind == "digits-last4":
                 present = frag in hay_digits
             else:
                 present = re.search(rf"\b{re.escape(frag)}\b", hay, re.IGNORECASE) is not None
             if present:
-                leaks.append({"original": original, "kind": kind, "fragment": frag})
+                seen.add(key)
+                leaks.append({"original": e.text, "kind": fkind, "fragment": frag})
     return leaks
 
 
@@ -730,7 +802,7 @@ async def run_test_case(
 
     # Partial / format-preserving leak check (surviving fragments)
     sanitized_joined = "\n\n".join(m.content for m in result.sanitized_messages)
-    partial_leaks = detect_partial_leaks(result.mapping, sanitized_joined)
+    partial_leaks = detect_partial_leaks(result.entities_found, sanitized_joined)
     if partial_leaks:
         print("  PARTIAL LEAKS (surviving fragments):")
         for pl in partial_leaks:
