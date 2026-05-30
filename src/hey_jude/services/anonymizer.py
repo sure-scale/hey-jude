@@ -26,30 +26,32 @@ _GENERIC_DESCRIPTOR_BY_TYPE = {
     "PHONE_NUMBER": "a phone number",
 }
 
-_GENERIC_PLACEHOLDER_TERMS = {
-    "address",
-    "agreement",
-    "company",
-    "consultant",
-    "date",
-    "director",
-    "document",
-    "employee",
-    "employer",
-    "executive",
-    "person",
-}
+# A well-formed placeholder is a single category token (PERSON_01, COMPANY_01,
+# and category-word echoes like PARTIES_01) or the structured email form
+# (person_01@company_01.com). Such a token never exposes readable PII in natural
+# language, so it is not a self-leak even when it echoes a generic source word.
+# A replacement that instead carries the original in natural prose ("Microsoft
+# Corp", "the firm Acme") is a real leak. The rare lazy-uppercase case
+# (real name pushed verbatim into a token) is caught downstream by the blind
+# inference attack, not by this cheap string pre-filter.
+_PLACEHOLDER_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*")
+_EMAIL_PLACEHOLDER_RE = re.compile(r"[A-Za-z0-9_]+@[A-Za-z0-9_.]+")
+
+
+def _is_placeholder_token(replacement: str) -> bool:
+    token = replacement.strip()
+    return bool(
+        _PLACEHOLDER_TOKEN_RE.fullmatch(token)
+        or _EMAIL_PLACEHOLDER_RE.fullmatch(token)
+    )
 
 
 def _replacement_leaks_original(original: str, replacement: str) -> bool:
     if len(original) < 3:
         return False
-
-    normalized_original = original.strip().casefold()
-    if normalized_original in _GENERIC_PLACEHOLDER_TERMS:
+    if _is_placeholder_token(replacement):
         return False
-
-    return normalized_original in replacement.casefold()
+    return original.strip().casefold() in replacement.casefold()
 
 
 def validate_llm_anonymization_response(

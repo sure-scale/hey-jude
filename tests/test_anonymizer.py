@@ -88,6 +88,32 @@ def test_validate_response_generic_placeholder_term_is_not_leak():
     assert entities[0].replacement == "FINTECH_COMPANY_01"
 
 
+def test_validate_response_category_token_echo_not_leak():
+    raw = {
+        "entities_found": [
+            {"text": "Parties", "type": "DEFINED_TERM", "action": "replace",
+             "replacement": "PARTIES_01", "reason": "categorized generic term"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    entities, _, _ = validate_llm_anonymization_response(raw)
+    assert entities[0].replacement == "PARTIES_01"
+
+
+def test_validate_response_natural_prose_replacement_still_leaks():
+    raw = {
+        "entities_found": [
+            {"text": "Acme", "type": "ORGANIZATION", "action": "replace",
+             "replacement": "the firm Acme", "reason": "left name in prose"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    with pytest.raises(ValueError, match="leaks original"):
+        validate_llm_anonymization_response(raw)
+
+
 def test_build_mapping_from_entities():
     entities = [
         FoundEntity(text="Microsoft", entity_type="ORGANIZATION",
