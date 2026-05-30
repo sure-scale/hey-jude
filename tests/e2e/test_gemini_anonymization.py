@@ -58,23 +58,11 @@ async def call_gemini(messages: list[dict], *, model: str = GEMINI_MODEL, max_to
         "Authorization": f"Bearer {GEMINI_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Long max_tokens runs (the inference attacker) occasionally hit a transient
-    # read timeout. Give reads generous headroom and retry transport errors with
-    # a fixed backoff so one network blip doesn't surface as a test error.
-    timeout = httpx.Timeout(connect=15.0, read=180.0, write=30.0, pool=15.0)
-    last_exc: Exception | None = None
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(GEMINI_URL, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
-        except (httpx.TransportError, httpx.TimeoutException) as e:
-            last_exc = e
-            if attempt < 2:
-                await asyncio.sleep(2.0 * (attempt + 1))
-    raise last_exc
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
+        resp = await client.post(GEMINI_URL, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
 
 
 async def check_ollama() -> bool:
@@ -158,33 +146,6 @@ Respond with ONLY a JSON object (no markdown fencing):
 {{"pii_leak_detection": {{"score": <0-10>, "leaked_items": [<list of leaked PII strings found in sanitized text>], "explanation": "<brief>"}}, "semantic_coherence": {{"score": <0-10>, "explanation": "<brief>"}}, "completeness": {{"score": <0-10>, "missed_entities": [<list of PII in original not in mapping>], "explanation": "<brief>"}}, "precision": {{"score": <0-10>, "false_positive_redactions": [<list of mapping keys that were NOT PII and should not have been redacted>], "explanation": "<brief>"}}, "overall_score": <average of the four scores, rounded to 1 decimal>}}"""
 
 
-def _loads_lenient(raw: str) -> dict | None:
-    """Parse a JSON object, salvaging it from fences or trailing truncation.
-
-    Gemini occasionally wraps JSON in a fence or truncates a long judge
-    response. Strip fences, then if a strict parse fails, trim from the last
-    closing brace inward until a balanced object parses. Returns None only if
-    nothing parseable is found.
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    if start == -1:
-        return None
-    end = text.rfind("}")
-    while end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            end = text.rfind("}", start, end)
-    return None
-
-
 async def evaluate_anonymization(
     original_text: str,
     sanitized_text: str,
@@ -201,10 +162,7 @@ async def evaluate_anonymization(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
         )
-        result = _loads_lenient(raw)
-        if result is None:
-            print(f"    EVAL ERROR: could not parse judge JSON")
-        return result
+        return json.loads(raw)
     except Exception as e:
         print(f"    EVAL ERROR: {type(e).__name__}: {e}")
         return None
@@ -252,10 +210,7 @@ async def evaluate_utility(original_answer: str, sanitized_answer: str) -> dict 
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
         )
-        result = _loads_lenient(raw)
-        if result is None:
-            print(f"    UTILITY ERROR: could not parse judge JSON")
-        return result
+        return json.loads(raw)
     except Exception as e:
         print(f"    UTILITY ERROR: {type(e).__name__}: {e}")
         return None
@@ -343,38 +298,9 @@ def _guess_matches_original(guess: str, original: str) -> bool:
     return bool(g_tokens & o_tokens)
 
 
-def _parse_guesses(raw: str) -> list[dict] | None:
-    """Parse the attacker's guess list, tolerating malformed/truncated JSON.
-
-    Large attacker responses sometimes come back truncated mid-string, which
-    breaks a strict json.loads. Rather than discard the whole attack, fall back
-    to extracting each complete top-level guess object individually so a cut-off
-    tail only costs the last guess. Returns None only when nothing is parseable.
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-    try:
-        return json.loads(text).get("guesses", [])
-    except json.JSONDecodeError:
-        pass
-
-    # Salvage: each guess object is flat (no nested braces), so match them one by
-    # one and parse independently; skip any fragment that is itself truncated.
-    salvaged: list[dict] = []
-    for m in re.finditer(r"\{[^{}]*\}", text):
-        try:
-            obj = json.loads(m.group(0))
-        except json.JSONDecodeError:
-            continue
-        if "placeholder" in obj:
-            salvaged.append(obj)
-
-    if salvaged:
-        print(f"    INFERENCE: salvaged {len(salvaged)} guesses from malformed JSON")
-        return salvaged
-    return None
+def _parse_guesses(raw: str) -> list[dict]:
+    """Parse the attacker's guess list. Malformed JSON fails loud."""
+    return json.loads(raw).get("guesses", [])
 
 
 async def run_inference_attack(
@@ -405,11 +331,6 @@ async def run_inference_attack(
         return None
 
     guesses = _parse_guesses(raw)
-    if guesses is None:
-        # Unparseable even after salvage. Treat as a no-result rather than a
-        # silent pass — a missing attack must not look like perfect resistance.
-        print("    INFERENCE: attacker output unparseable (no guesses salvaged)")
-        return None
 
     # Index guesses by placeholder for lookup against the truth table.
     by_placeholder: dict[str, dict] = {}
