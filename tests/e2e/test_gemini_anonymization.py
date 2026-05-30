@@ -1103,6 +1103,29 @@ async def main():
     if total_partial:
         print(f"  Partial/format leaks: {total_partial} total across all cases")
 
+    # Point the operator at the tracked benchmark file and restate this run's
+    # headline numbers in the same percent form BENCHMARKS.md uses, so an
+    # improvement or regression can be copied straight into the table.
+    benchmarks_path = Path(__file__).resolve().parents[2] / "BENCHMARKS.md"
+    print_separator()
+    print(f"  Benchmark of record: {benchmarks_path}")
+    print("  If these numbers differ from the table there, update BENCHMARKS.md:")
+    if eval_scores:
+        print(f"    Eval:       {avg * 10:.0f}%")
+    if infer_scores:
+        print(
+            f"    Resistance: {avg_infer * 10:.0f}% "
+            f"({total_reid} re-ids across {len(infer_scores)} cases)"
+        )
+    if util_scores:
+        print(f"    Utility:    {avg_util * 10:.0f}%")
+    print(
+        f"    Result:     {passed}/{len(results)} passed "
+        f"({passed / len(results) * 100:.0f}%), {failed} failed, {errored} errored"
+    )
+    if total_partial:
+        print(f"    Partial/format leaks: {total_partial}")
+
     print_separator()
     return failed == 0 and errored == 0
 
