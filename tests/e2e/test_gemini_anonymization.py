@@ -47,13 +47,25 @@ GEMINI_EVAL_MODEL = os.environ.get("GEMINI_EVAL_MODEL", "gemini-pro-latest")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 
-async def call_gemini(messages: list[dict], *, model: str = GEMINI_MODEL, max_tokens: int = 4096) -> str:
+async def call_gemini(
+    messages: list[dict],
+    *,
+    model: str = GEMINI_MODEL,
+    max_tokens: int = 4096,
+    json_mode: bool = False,
+) -> str:
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
+    # The judge and attacker calls must return a JSON object. Constrain the API
+    # to emit one rather than parsing defensively after the fact — a malformed
+    # judge response is then an API contract violation that fails loud, not
+    # something to salvage. The destination call returns prose and stays off.
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     headers = {
         "Authorization": f"Bearer {GEMINI_API_KEY}",
         "Content-Type": "application/json",
@@ -161,6 +173,7 @@ async def evaluate_anonymization(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
+            json_mode=True,
         )
         return json.loads(raw)
     except Exception as e:
@@ -209,6 +222,7 @@ async def evaluate_utility(original_answer: str, sanitized_answer: str) -> dict 
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
+            json_mode=True,
         )
         return json.loads(raw)
     except Exception as e:
@@ -325,6 +339,7 @@ async def run_inference_attack(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
             max_tokens=8192,
+            json_mode=True,
         )
     except Exception as e:
         print(f"    INFERENCE ERROR: {type(e).__name__}: {e}")
