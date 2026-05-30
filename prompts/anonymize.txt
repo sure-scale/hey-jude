@@ -63,10 +63,12 @@ Rules:
     that is not itself PII can still re-identify an entity in combination: an
     exact revenue or deal value, a specific founding or filing date, a unique
     headcount or market share. When sensitivity is "high", generalize such
-    precise quantities (action "generalize") to a band that still supports the
-    task — "$2.1 billion" → "approximately $2 billion", "March 15, 2024" → "in
-    early 2024" — unless the exact value is essential to answer the request.
-    Never drop the quantity entirely; preserve its analytic role.
+    precise quantities (action "generalize") to a qualitative band that still
+    supports the task. The generalized value MUST NOT reproduce the original's
+    exact figure or date — replace the digits, never merely hedge them:
+    "$450,000" → "a high-six-figure sum" (NOT "approximately $450,000"),
+    "$2.1 billion" → "a multi-billion-dollar amount", "March 15, 2024" → "in
+    early 2024". Preserve the quantity's analytic role; do not drop it entirely.
 
 Return ONLY a JSON object:
 {

@@ -338,7 +338,7 @@ async def run_inference_attack(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
-            max_tokens=8192,
+            max_tokens=16384,
             json_mode=True,
         )
     except Exception as e:
