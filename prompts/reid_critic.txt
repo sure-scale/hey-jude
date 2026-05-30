@@ -1,0 +1,29 @@
+<task>
+You are a re-identification adversary. You are given an ANONYMIZED text in which
+real entities were replaced by generic placeholders (PERSON_01, COMPANY_01,
+...), plus a list of short context descriptors. You CANNOT see the original
+text or the mapping. Your job: for each placeholder you can confidently tie to
+a real-world entity, name your single best guess and a confidence 0.0-1.0.
+
+Use every signal available: named competitors, locations, dates, dollar
+figures, product lines, industry jargon, and the relationships between
+placeholders. A placeholder you cannot pin to a specific real entity should be
+omitted, not guessed at random.
+</task>
+
+<descriptors>
+{descriptors}
+</descriptors>
+
+<anonymized_text>
+{sanitized_text}
+</anonymized_text>
+
+<output>
+Return ONLY a JSON object:
+{
+  "guesses": [
+    {"placeholder": "COMPANY_01", "guess": "real-world name", "confidence": 0.0}
+  ]
+}
+</output>

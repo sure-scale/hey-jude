@@ -7,20 +7,25 @@ identifying information (PII). For each entity, decide the appropriate action.
 For each entity you find, classify it and decide an action:
 
 Actions:
-- "replace": Real PII. Replace with a semantic placeholder that preserves the
-  entity's role without identifying it.
-  Examples: "Microsoft" → "SOFTWARE_COMPANY_01", "Dr. Sarah Chen" → "PERSON_01",
-  "California" → "US_WEST_COAST", "john@acme.com" → "person_01@company_01.com"
+- "replace": Real PII. Replace with a GENERIC placeholder that preserves the
+  entity's structural role but not its identity. Use the broadest category
+  that still lets the task be answered.
+  Examples: "Microsoft" → "COMPANY_01", "Dr. Sarah Chen" → "PERSON_01",
+  "California" → "REGION_01", "john@acme.com" → "person_01@company_01.com"
 - "keep": Not PII. Legal defined terms ("the Purchaser", "the Agreement"),
   generic roles, or terms that are structural rather than identifying.
-- "generalize": Partially sensitive. Replace with a broader category that
-  preserves useful context. "123 Main St, San Francisco" → "URBAN_ADDRESS_01"
+- "generalize": Partially sensitive. Replace with a broad category that
+  preserves useful context. "123 Main St, San Francisco" → "ADDRESS_01"
 
 Rules:
 1. Reuse existing mappings for consistency. If "Microsoft" already maps to
-   "SOFTWARE_COMPANY_01", use that same mapping.
-2. Semantic placeholders should reflect the entity's domain/category, not just
-   its type. "Goldman Sachs" → "INVESTMENT_BANK_01", not "COMPANY_01".
+   "COMPANY_01", use that same mapping.
+2. Use the BROADEST category that still supports the task, never the narrowest.
+   A narrow category label is itself an identifier: combined with the visible
+   context (named competitors, locations, dates, dollar figures, industry
+   terms) it re-identifies the entity. Prefer "COMPANY_01" over
+   "INVESTMENT_BANK_01"; prefer "PERSON_01" over "CARDIOLOGIST_01". Only keep a
+   narrower category when the task genuinely cannot be answered without it.
 3. Real company and organization names are ALWAYS PII — replace them even when
    they also serve as defined terms. A company is PII even if the contract
    defines it as "the Company". Only generic structural labels like
@@ -37,7 +42,23 @@ Rules:
 6. Catch both numeric and written-out forms of the same value.
    If a dollar amount appears as digits and as words, emit both.
 7. Assess overall sensitivity: "low" if replacements alone prevent
-   identification, "high" if structural patterns could still de-anonymize.
+   identification, "high" if structural patterns could still de-anonymize
+   (famous entities, unique facts, named relationships that survive masking).
+8. Identifiability self-check. Before finalizing each placeholder AND its
+   descriptor, ask: "Given this placeholder, its descriptor, and the visible
+   context (named competitors, locations, dates, dollar figures, product
+   lines, industry terms), could a knowledgeable reader name the real entity?"
+   If yes, broaden the category until they cannot:
+   INVESTMENT_BANK_01 → FINANCIAL_FIRM_01 → COMPANY_01. This applies doubly to
+   famous entities whose scale, product line, or location is itself
+   identifying.
+9. context_descriptors follow the same broadest-category rule. A descriptor
+   exists only to keep the text readable for the downstream model — give the
+   minimum needed ("a company", "a senior executive") and never a
+   distinguishing detail ("the largest US cloud provider", "a Seattle-based
+   retailer", "a $2T-market-cap firm"). Do not restate the placeholder's
+   category verbatim; if the placeholder already conveys the role, omit the
+   descriptor entirely.
 
 Return ONLY a JSON object:
 {

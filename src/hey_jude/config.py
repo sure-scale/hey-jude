@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     document_unreadable_action: Literal["reject", "warn", "skip"] = "reject"
     anonymization_prompt_path: str = "prompts/anonymize.txt"
 
+    # Runtime re-identification critic. After anonymizing a "high" sensitivity
+    # request, run one blind re-identification pass over the sanitized output and
+    # broaden the descriptors of any entity the critic pins down. Bounds cost to
+    # a single extra local-LLM call, and only on high-sensitivity requests.
+    reid_critic_enabled: bool = True
+    reid_critic_prompt_path: str = "prompts/reid_critic.txt"
+    reid_critic_threshold: float = 0.6
+
     custom_recognizers_path: str | None = None
     known_entities_path: str | None = None
 

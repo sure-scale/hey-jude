@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from hey_jude.config import Settings
@@ -12,6 +13,18 @@ from hey_jude.services.text import (
     apply_mapping_to_text,
     apply_mapping_preserving_text_structure,
 )
+
+# Minimal, deliberately uninformative descriptor used to overwrite the
+# descriptor of any entity the re-identification critic manages to pin down.
+_GENERIC_DESCRIPTOR_BY_TYPE = {
+    "PERSON": "a person",
+    "ORGANIZATION": "an organization",
+    "COMPANY": "a company",
+    "LOCATION": "a location",
+    "GPE": "a location",
+    "EMAIL_ADDRESS": "an email address",
+    "PHONE_NUMBER": "a phone number",
+}
 
 _GENERIC_PLACEHOLDER_TERMS = {
     "address",
@@ -102,6 +115,116 @@ def render_prompt(
     )
 
 
+def _parse_critic_guesses(raw: str) -> list[dict]:
+    """Parse the critic's JSON, salvaging guesses from malformed output.
+
+    The critic runs on the same local LLM as anonymization and can truncate or
+    fence its JSON. Rather than discard the whole pass, fall back to harvesting
+    individual guess objects so a re-identification is never missed on a parse
+    error.
+    """
+    try:
+        parsed = parse_llm_response(raw)
+        guesses = parsed.get("guesses")
+        if isinstance(guesses, list):
+            return [g for g in guesses if isinstance(g, dict)]
+    except ValueError:
+        pass
+
+    salvaged: list[dict] = []
+    for match in re.finditer(r"\{[^{}]*\}", raw):
+        try:
+            obj = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "placeholder" in obj and "guess" in obj:
+            salvaged.append(obj)
+    return salvaged
+
+
+def _guess_matches_original(guess: str, original: str) -> bool:
+    """Loose match between a critic guess and the true entity behind a placeholder."""
+    g = guess.strip().casefold()
+    o = original.strip().casefold()
+    if not g or not o:
+        return False
+    if g == o:
+        return True
+    # Substring match, but only on meaningful spans to avoid e.g. "Inc" hitting
+    # every company.
+    if len(g) >= 4 and g in o:
+        return True
+    if len(o) >= 4 and o in g:
+        return True
+    g_tokens = {t for t in re.split(r"[^a-z0-9]+", g) if len(t) >= 4}
+    o_tokens = {t for t in re.split(r"[^a-z0-9]+", o) if len(t) >= 4}
+    return bool(g_tokens & o_tokens)
+
+
+async def _run_reid_critic(
+    sanitized_messages: list[ChatMessage],
+    descriptors: dict[str, str],
+    reverse_mapping: dict[str, str],
+    placeholder_types: dict[str, str],
+    settings: Settings,
+) -> dict[str, str]:
+    """Blind re-identification pass; broaden descriptors the critic cracks.
+
+    Returns a possibly-modified copy of ``descriptors``. The critic sees only
+    the sanitized text and descriptors (never the originals or the mapping);
+    the pipeline scores its guesses against the truth it holds and overwrites
+    any pinned-down descriptor with a generic, uninformative one.
+    """
+    sanitized_text = "\n\n".join(
+        m.content for m in sanitized_messages if isinstance(m.content, str)
+    )
+    if not sanitized_text.strip():
+        return descriptors
+
+    template = Path(settings.reid_critic_prompt_path).read_text()
+    descriptor_block = (
+        "\n".join(f"- {name}: {desc}" for name, desc in descriptors.items())
+        or "(none)"
+    )
+    prompt = (
+        template
+        .replace("{descriptors}", descriptor_block)
+        .replace("{sanitized_text}", sanitized_text)
+    )
+
+    try:
+        raw = await call_local_llm(prompt, settings)
+    except Exception:
+        # The critic is a best-effort hardening pass; never fail the request on it.
+        return descriptors
+
+    updated = dict(descriptors)
+    for guess in _parse_critic_guesses(raw):
+        placeholder = guess.get("placeholder")
+        guess_text = guess.get("guess")
+        try:
+            confidence = float(guess.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not placeholder or not guess_text:
+            continue
+        if confidence < settings.reid_critic_threshold:
+            continue
+        # Only broaden a descriptor that already exists. If the critic cracked a
+        # placeholder that had no descriptor, the leak came from the text or
+        # structure — inventing a descriptor here would add signal, not remove it.
+        if placeholder not in updated:
+            continue
+        original = reverse_mapping.get(placeholder)
+        if not original or not _guess_matches_original(guess_text, original):
+            continue
+        entity_type = placeholder_types.get(placeholder, "").upper()
+        updated[placeholder] = _GENERIC_DESCRIPTOR_BY_TYPE.get(
+            entity_type, "an entity referenced in the document"
+        )
+    return updated
+
+
 async def anonymize_messages(
     messages: list[ChatMessage],
     settings: Settings,
@@ -166,6 +289,20 @@ async def anonymize_messages(
     }
 
     reverse_mapping = {v: k for k, v in accumulated_mapping.items()}
+
+    if settings.reid_critic_enabled and overall_sensitivity == "high":
+        placeholder_types = {
+            e.replacement: e.entity_type
+            for e in all_entities
+            if e.replacement
+        }
+        sanitized_descriptors = await _run_reid_critic(
+            sanitized_messages,
+            sanitized_descriptors,
+            reverse_mapping,
+            placeholder_types,
+            settings,
+        )
 
     return AnonymizationResult(
         mapping=accumulated_mapping,
