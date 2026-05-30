@@ -52,7 +52,7 @@ async def call_gemini(
     *,
     model: str = GEMINI_MODEL,
     max_tokens: int = 4096,
-    json_mode: bool = False,
+    json_schema: dict | None = None,
 ) -> str:
     payload = {
         "model": model,
@@ -60,12 +60,17 @@ async def call_gemini(
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
-    # The judge and attacker calls must return a JSON object. Constrain the API
-    # to emit one rather than parsing defensively after the fact — a malformed
-    # judge response is then an API contract violation that fails loud, not
-    # something to salvage. The destination call returns prose and stays off.
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+    # The judge and attacker calls must return a JSON object of an exact shape.
+    # Constrain the API with a strict response schema rather than parsing
+    # defensively after the fact: the model then cannot return a bare array, a
+    # wrong key set, or a truncated object, so a non-conforming judge response is
+    # an API contract violation that fails loud, never something to salvage. The
+    # destination call returns prose and passes no schema.
+    if json_schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": json_schema,
+        }
     headers = {
         "Authorization": f"Bearer {GEMINI_API_KEY}",
         "Content-Type": "application/json",
@@ -75,6 +80,87 @@ async def call_gemini(
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+# Strict output contracts for the three structured judge/attacker calls. Each
+# mandates the exact object shape its parser expects, so the model cannot emit a
+# differently-shaped (but still valid) JSON value that the parser would choke on.
+def _strict(properties: dict, required: list[str]) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+_SCORE = {"type": "number"}
+_STR = {"type": "string"}
+_STR_LIST = {"type": "array", "items": {"type": "string"}}
+
+EVAL_SCHEMA = {
+    "name": "anonymization_eval",
+    "strict": True,
+    "schema": _strict(
+        {
+            "pii_leak_detection": _strict(
+                {"score": _SCORE, "leaked_items": _STR_LIST, "explanation": _STR},
+                ["score", "leaked_items", "explanation"],
+            ),
+            "semantic_coherence": _strict(
+                {"score": _SCORE, "explanation": _STR}, ["score", "explanation"]
+            ),
+            "completeness": _strict(
+                {"score": _SCORE, "missed_entities": _STR_LIST, "explanation": _STR},
+                ["score", "missed_entities", "explanation"],
+            ),
+            "precision": _strict(
+                {
+                    "score": _SCORE,
+                    "false_positive_redactions": _STR_LIST,
+                    "explanation": _STR,
+                },
+                ["score", "false_positive_redactions", "explanation"],
+            ),
+            "overall_score": _SCORE,
+        },
+        [
+            "pii_leak_detection",
+            "semantic_coherence",
+            "completeness",
+            "precision",
+            "overall_score",
+        ],
+    ),
+}
+
+UTILITY_SCHEMA = {
+    "name": "utility_eval",
+    "strict": True,
+    "schema": _strict({"score": _SCORE, "explanation": _STR}, ["score", "explanation"]),
+}
+
+GUESSES_SCHEMA = {
+    "name": "reid_guesses",
+    "strict": True,
+    "schema": _strict(
+        {
+            "guesses": {
+                "type": "array",
+                "items": _strict(
+                    {
+                        "placeholder": _STR,
+                        "guess": _STR,
+                        "confidence": _SCORE,
+                        "reasoning": _STR,
+                    },
+                    ["placeholder", "guess", "confidence", "reasoning"],
+                ),
+            }
+        },
+        ["guesses"],
+    ),
+}
 
 
 async def check_ollama() -> bool:
@@ -173,7 +259,7 @@ async def evaluate_anonymization(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
-            json_mode=True,
+            json_schema=EVAL_SCHEMA,
         )
         return json.loads(raw)
     except Exception as e:
@@ -222,7 +308,7 @@ async def evaluate_utility(original_answer: str, sanitized_answer: str) -> dict 
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
-            json_mode=True,
+            json_schema=UTILITY_SCHEMA,
         )
         return json.loads(raw)
     except Exception as e:
@@ -339,7 +425,7 @@ async def run_inference_attack(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
             max_tokens=16384,
-            json_mode=True,
+            json_schema=GUESSES_SCHEMA,
         )
     except Exception as e:
         print(f"    INFERENCE ERROR: {type(e).__name__}: {e}")
