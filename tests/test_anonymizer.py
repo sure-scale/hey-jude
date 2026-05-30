@@ -10,6 +10,9 @@ from hey_jude.services.anonymizer import (
     build_mapping_from_entities,
     render_prompt,
     anonymize_messages,
+    _run_reid_critic,
+    _parse_critic_guesses,
+    _guess_matches_original,
 )
 
 
@@ -83,6 +86,32 @@ def test_validate_response_generic_placeholder_term_is_not_leak():
     }
     entities, _, _ = validate_llm_anonymization_response(raw)
     assert entities[0].replacement == "FINTECH_COMPANY_01"
+
+
+def test_validate_response_category_token_echo_not_leak():
+    raw = {
+        "entities_found": [
+            {"text": "Parties", "type": "DEFINED_TERM", "action": "replace",
+             "replacement": "PARTIES_01", "reason": "categorized generic term"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    entities, _, _ = validate_llm_anonymization_response(raw)
+    assert entities[0].replacement == "PARTIES_01"
+
+
+def test_validate_response_natural_prose_replacement_still_leaks():
+    raw = {
+        "entities_found": [
+            {"text": "Acme", "type": "ORGANIZATION", "action": "replace",
+             "replacement": "the firm Acme", "reason": "left name in prose"},
+        ],
+        "context_descriptors": {},
+        "sensitivity": "low",
+    }
+    with pytest.raises(ValueError, match="leaks original"):
+        validate_llm_anonymization_response(raw)
 
 
 def test_build_mapping_from_entities():
@@ -386,6 +415,102 @@ async def test_anonymize_messages_high_sensitivity_propagates():
         result = await anonymize_messages(messages, settings, prompt_template=template)
 
     assert result.sensitivity == "high"
+
+
+def test_guess_matches_original_exact():
+    assert _guess_matches_original("Walmart", "Walmart")
+
+
+def test_guess_matches_original_substring():
+    assert _guess_matches_original("Microsoft", "Microsoft Corporation")
+    assert _guess_matches_original("Goldman Sachs Group", "Goldman Sachs")
+
+
+def test_guess_matches_original_token_overlap():
+    assert _guess_matches_original("Blackstone Inc", "Blackstone Group")
+
+
+def test_guess_matches_original_no_match_on_short_or_unrelated():
+    assert not _guess_matches_original("IBM", "Apple")
+    assert not _guess_matches_original("", "Walmart")
+
+
+def test_parse_critic_guesses_clean_json():
+    raw = json.dumps({"guesses": [
+        {"placeholder": "COMPANY_01", "guess": "Walmart", "confidence": 0.9},
+    ]})
+    guesses = _parse_critic_guesses(raw)
+    assert guesses == [{"placeholder": "COMPANY_01", "guess": "Walmart", "confidence": 0.9}]
+
+
+def test_parse_critic_guesses_empty_when_no_guesses_key():
+    assert _parse_critic_guesses(json.dumps({"other": 1})) == []
+
+
+async def _run_critic(critic_response, descriptors, reverse_mapping, placeholder_types):
+    settings = Settings(anonymization_mode="llm")
+    sanitized_messages = [ChatMessage(role="user", content="COMPANY_01 competes globally")]
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = critic_response
+        return await _run_reid_critic(
+            sanitized_messages, descriptors, reverse_mapping, placeholder_types, settings,
+        )
+
+
+async def test_reid_critic_broadens_pinned_descriptor():
+    critic_response = json.dumps({"guesses": [
+        {"placeholder": "COMPANY_01", "guess": "Walmart", "confidence": 0.9},
+    ]})
+    updated = await _run_critic(
+        critic_response,
+        descriptors={"COMPANY_01": "the largest retailer in the world"},
+        reverse_mapping={"COMPANY_01": "Walmart"},
+        placeholder_types={"COMPANY_01": "ORGANIZATION"},
+    )
+    assert updated["COMPANY_01"] == "an organization"
+
+
+async def test_reid_critic_ignores_low_confidence():
+    critic_response = json.dumps({"guesses": [
+        {"placeholder": "COMPANY_01", "guess": "Walmart", "confidence": 0.3},
+    ]})
+    updated = await _run_critic(
+        critic_response,
+        descriptors={"COMPANY_01": "the largest retailer in the world"},
+        reverse_mapping={"COMPANY_01": "Walmart"},
+        placeholder_types={"COMPANY_01": "ORGANIZATION"},
+    )
+    assert updated["COMPANY_01"] == "the largest retailer in the world"
+
+
+async def test_reid_critic_ignores_wrong_guess():
+    critic_response = json.dumps({"guesses": [
+        {"placeholder": "COMPANY_01", "guess": "Target", "confidence": 0.9},
+    ]})
+    updated = await _run_critic(
+        critic_response,
+        descriptors={"COMPANY_01": "the largest retailer in the world"},
+        reverse_mapping={"COMPANY_01": "Walmart"},
+        placeholder_types={"COMPANY_01": "ORGANIZATION"},
+    )
+    assert updated["COMPANY_01"] == "the largest retailer in the world"
+
+
+async def test_reid_critic_does_not_invent_missing_descriptor():
+    critic_response = json.dumps({"guesses": [
+        {"placeholder": "PERSON_01", "guess": "Jeff Bezos", "confidence": 0.9},
+    ]})
+    updated = await _run_critic(
+        critic_response,
+        descriptors={"COMPANY_01": "a retailer"},
+        reverse_mapping={"PERSON_01": "Jeff Bezos", "COMPANY_01": "Walmart"},
+        placeholder_types={"PERSON_01": "PERSON", "COMPANY_01": "ORGANIZATION"},
+    )
+    assert "PERSON_01" not in updated
+    assert updated["COMPANY_01"] == "a retailer"
 
 
 async def test_anonymize_messages_exhausted_retries_raises():

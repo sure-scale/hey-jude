@@ -412,6 +412,7 @@ async def _gateway_pipeline(
         messages=sub_result.sanitized_messages,
         context_descriptors=sub_result.context_descriptors,
         model=settings.external_llm_model,
+        sensitivity=sub_result.sensitivity,
         **completion_kwargs,
     )
     if record is not None:

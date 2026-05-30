@@ -47,22 +47,120 @@ GEMINI_EVAL_MODEL = os.environ.get("GEMINI_EVAL_MODEL", "gemini-pro-latest")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 
-async def call_gemini(messages: list[dict], *, model: str = GEMINI_MODEL, max_tokens: int = 4096) -> str:
+async def call_gemini(
+    messages: list[dict],
+    *,
+    model: str = GEMINI_MODEL,
+    max_tokens: int = 4096,
+    json_schema: dict | None = None,
+) -> str:
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
+    # The judge and attacker calls must return a JSON object of an exact shape.
+    # Constrain the API with a strict response schema rather than parsing
+    # defensively after the fact: the model then cannot return a bare array, a
+    # wrong key set, or a truncated object, so a non-conforming judge response is
+    # an API contract violation that fails loud, never something to salvage. The
+    # destination call returns prose and passes no schema.
+    if json_schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": json_schema,
+        }
     headers = {
         "Authorization": f"Bearer {GEMINI_API_KEY}",
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
         resp = await client.post(GEMINI_URL, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+# Strict output contracts for the three structured judge/attacker calls. Each
+# mandates the exact object shape its parser expects, so the model cannot emit a
+# differently-shaped (but still valid) JSON value that the parser would choke on.
+def _strict(properties: dict, required: list[str]) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+_SCORE = {"type": "number"}
+_STR = {"type": "string"}
+_STR_LIST = {"type": "array", "items": {"type": "string"}}
+
+EVAL_SCHEMA = {
+    "name": "anonymization_eval",
+    "strict": True,
+    "schema": _strict(
+        {
+            "pii_leak_detection": _strict(
+                {"score": _SCORE, "leaked_items": _STR_LIST, "explanation": _STR},
+                ["score", "leaked_items", "explanation"],
+            ),
+            "semantic_coherence": _strict(
+                {"score": _SCORE, "explanation": _STR}, ["score", "explanation"]
+            ),
+            "completeness": _strict(
+                {"score": _SCORE, "missed_entities": _STR_LIST, "explanation": _STR},
+                ["score", "missed_entities", "explanation"],
+            ),
+            "precision": _strict(
+                {
+                    "score": _SCORE,
+                    "false_positive_redactions": _STR_LIST,
+                    "explanation": _STR,
+                },
+                ["score", "false_positive_redactions", "explanation"],
+            ),
+            "overall_score": _SCORE,
+        },
+        [
+            "pii_leak_detection",
+            "semantic_coherence",
+            "completeness",
+            "precision",
+            "overall_score",
+        ],
+    ),
+}
+
+UTILITY_SCHEMA = {
+    "name": "utility_eval",
+    "strict": True,
+    "schema": _strict({"score": _SCORE, "explanation": _STR}, ["score", "explanation"]),
+}
+
+GUESSES_SCHEMA = {
+    "name": "reid_guesses",
+    "strict": True,
+    "schema": _strict(
+        {
+            "guesses": {
+                "type": "array",
+                "items": _strict(
+                    {
+                        "placeholder": _STR,
+                        "guess": _STR,
+                        "confidence": _SCORE,
+                        "reasoning": _STR,
+                    },
+                    ["placeholder", "guess", "confidence", "reasoning"],
+                ),
+            }
+        },
+        ["guesses"],
+    ),
+}
 
 
 async def check_ollama() -> bool:
@@ -161,11 +259,9 @@ async def evaluate_anonymization(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
+            json_schema=EVAL_SCHEMA,
         )
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(text)
+        return json.loads(raw)
     except Exception as e:
         print(f"    EVAL ERROR: {type(e).__name__}: {e}")
         return None
@@ -212,11 +308,9 @@ async def evaluate_utility(original_answer: str, sanitized_answer: str) -> dict 
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
+            json_schema=UTILITY_SCHEMA,
         )
-        text = raw.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(text)
+        return json.loads(raw)
     except Exception as e:
         print(f"    UTILITY ERROR: {type(e).__name__}: {e}")
         return None
@@ -304,38 +398,9 @@ def _guess_matches_original(guess: str, original: str) -> bool:
     return bool(g_tokens & o_tokens)
 
 
-def _parse_guesses(raw: str) -> list[dict] | None:
-    """Parse the attacker's guess list, tolerating malformed/truncated JSON.
-
-    Large attacker responses sometimes come back truncated mid-string, which
-    breaks a strict json.loads. Rather than discard the whole attack, fall back
-    to extracting each complete top-level guess object individually so a cut-off
-    tail only costs the last guess. Returns None only when nothing is parseable.
-    """
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-    try:
-        return json.loads(text).get("guesses", [])
-    except json.JSONDecodeError:
-        pass
-
-    # Salvage: each guess object is flat (no nested braces), so match them one by
-    # one and parse independently; skip any fragment that is itself truncated.
-    salvaged: list[dict] = []
-    for m in re.finditer(r"\{[^{}]*\}", text):
-        try:
-            obj = json.loads(m.group(0))
-        except json.JSONDecodeError:
-            continue
-        if "placeholder" in obj:
-            salvaged.append(obj)
-
-    if salvaged:
-        print(f"    INFERENCE: salvaged {len(salvaged)} guesses from malformed JSON")
-        return salvaged
-    return None
+def _parse_guesses(raw: str) -> list[dict]:
+    """Parse the attacker's guess list. Malformed JSON fails loud."""
+    return json.loads(raw).get("guesses", [])
 
 
 async def run_inference_attack(
@@ -359,18 +424,14 @@ async def run_inference_attack(
         raw = await call_gemini(
             [{"role": "user", "content": prompt}],
             model=GEMINI_EVAL_MODEL,
-            max_tokens=8192,
+            max_tokens=16384,
+            json_schema=GUESSES_SCHEMA,
         )
     except Exception as e:
         print(f"    INFERENCE ERROR: {type(e).__name__}: {e}")
         return None
 
     guesses = _parse_guesses(raw)
-    if guesses is None:
-        # Unparseable even after salvage. Treat as a no-result rather than a
-        # silent pass — a missing attack must not look like perfect resistance.
-        print("    INFERENCE: attacker output unparseable (no guesses salvaged)")
-        return None
 
     # Index guesses by placeholder for lookup against the truth table.
     by_placeholder: dict[str, dict] = {}
