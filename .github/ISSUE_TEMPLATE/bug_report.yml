@@ -1,0 +1,42 @@
+name: Bug report
+description: Report incorrect behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Use synthetic data only — no real PII, secrets, or keys.**
+        A privacy leak (un-anonymized text reaching a provider) is a security
+        report: use the security advisory link, not this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened vs. what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps with fake data.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Redact real data first.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, local model + provider.
+    validations:
+      required: true
