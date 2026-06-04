@@ -17,10 +17,12 @@
 Hey Jude is a drop-in proxy that sits between your app and your LLM provider. It strips PII out of prompts before they leave your environment and restores it in the response — your users see real names, the cloud LLM never does. Point any OpenAI, Anthropic, or Gemini SDK at it and keep your existing code.
 
 ```
-You send:   "Draft a demand letter for John Doe v. Goldman Sachs."
-LLM sees:   "Draft a demand letter for PERSON_01 v. COMPANY_01."
-You get back: a letter naming John Doe and Goldman Sachs.
+You send:   "Draft a demand letter to Goldman Sachs for the $2.4M it owes our client John Doe."
+LLM sees:   "Draft a demand letter to COMPANY_01 for the multi-million-dollar sum it owes our client PERSON_01."
+You get back: a letter naming Goldman Sachs, John Doe, and the exact $2.4M figure.
 ```
+
+The dollar amount is generalized to a band on the way out — a precise figure can re-identify a deal even with the names gone — and restored on the way back, so your work product keeps the real numbers.
 
 A local LLM does the swap, so it understands context: legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses become semantic placeholders that keep enough meaning for the model to reason well. A Presidio safety net catches anything it misses.
 
