@@ -69,4 +69,9 @@ async def call_local_llm(prompt: str, settings: Settings) -> str:
         resp.raise_for_status()
         data = resp.json()
         msg = data["choices"][0]["message"]
-        return msg.get("content") or msg.get("reasoning_content", "")
+        content = msg.get("content") or msg.get("reasoning_content")
+        if not content:
+            raise ValueError(
+                f"Local LLM returned an empty completion: {data['choices'][0]!r}"
+            )
+        return content

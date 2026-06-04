@@ -192,6 +192,72 @@ _PROMPT_PREFIXES = {
 }
 
 
+# Real named individual (person, org) per document, used to build the
+# identity-essential prompt for the IRREDUCIBLE track. The SAME document is
+# reducible under a "review this agreement" prompt (masking the names fully
+# answers it) and irreducible under a prompt that asks about the real person
+# behind the placeholder — reducibility is a property of the REQUEST, not the
+# document. None where the document names no single individual whose identity
+# the request would hinge on (a blank template, or an entity-to-entity deal);
+# those docs stay on the reducible track only.
+_SUBJECTS = {
+    "settlement_teligent_sawyer.txt": ("Timothy B. Sawyer", "Teligent"),
+    "settlement_tarantella_keddy.txt": ("Caroline Keddy", "Tarantella"),
+    "employment_ppd_hill.txt": ("Raymond H. Hill", "PPD"),
+    "employment_euramax_brown.txt": ("Richard Brown", "Euramax International"),
+    "consulting_walmart_simon.txt": ("William S. Simon", "Walmart"),
+    "consulting_nda_hg_holdings.txt": ("Brad G. Garner", "HG Holdings"),
+    "transition_societypass_nguyen.txt": ("Dennis Nguyen", "Society Pass"),
+    "nda_lightwave_logic.txt": None,
+    "separation_crypto_co_gilbert.txt": ("James Gilbert", "The Crypto Company"),
+    "noncompete_cdi_stuart.txt": ("Jay G. Stuart", "CDI Corp"),
+    "lease_mostofi_b4mc.txt": None,
+    "loan_vpr_brands_frija.txt": ("Kevin Frija", "VPR Brands"),
+    "license_implant_sciences_ibt.txt": None,
+    "purchase_bizright_bzrth.txt": ("Allan Huang", "BizRight LLC"),
+}
+
+
+_EDGAR_HEADER_LINE = re.compile(
+    r"^(EX-\S+|\d{1,3}|\S+\.(?:htm|html|txt))$", re.IGNORECASE
+)
+
+
+def _strip_edgar_header(text: str) -> str:
+    """Remove the SEC EDGAR exhibit preamble the HTML wrapper carries above the
+    document body: the exhibit label ("EX-10.1"), the sequence number, and the
+    source filename ("vprb072318ex10-1.htm"). These are submission plumbing, not
+    legal content, and the filename embeds the ticker and filing date — handing
+    a re-identifier to any downstream reader. Strip the leading run of header
+    lines (capped so it cannot eat into the body), then drop any stray
+    exhibit-filename token that survives elsewhere.
+    """
+    lines = text.split("\n")
+    i = 0
+    while i < min(len(lines), 6) and (
+        lines[i].strip() == "" or _EDGAR_HEADER_LINE.match(lines[i].strip())
+    ):
+        i += 1
+    body = "\n".join(lines[i:])
+    body = re.sub(r"\b\S+\.(?:htm|html)\b", "", body)
+    return body.strip()
+
+
+def _identity_prompt(name: str, org: str) -> str:
+    """A prompt whose answer genuinely requires the real named individual.
+
+    Asking about the real person's external history cannot be served by a
+    PERSON_01 placeholder, so masking destroys the task: NAMED_ENTITY_ESSENTIAL.
+    """
+    return (
+        f"I'm conducting background diligence on {name}, the individual named in "
+        f"this agreement involving {org}. Using this document together with your "
+        f"own knowledge of this specific person, summarize their public track "
+        f"record, other roles and board memberships, and any reputational or "
+        f"litigation history relevant to this engagement."
+    )
+
+
 def ensure_downloaded() -> dict[str, Path]:
     """Download all docs if needed, return dict of name -> path for available docs."""
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,15 +275,23 @@ def ensure_downloaded() -> dict[str, Path]:
 def load_test_cases(max_chars: int = 4000) -> list[dict]:
     """Load downloaded docs as test case dicts. Auto-downloads if needed.
 
-    Returns list of dicts with keys: name, content, prompt_prefix, pii_notes.
-    Caller is responsible for wrapping in ChatMessage objects.
+    Each document yields one REDUCIBLE case (a "review this agreement" prompt,
+    which masking fully satisfies) and, where the document names a specific
+    individual (see _SUBJECTS), one IRREDUCIBLE case (an identity-essential
+    prompt about that real person, which masking cannot serve). Reducibility is
+    a property of the request, so the same source document appears on both
+    tracks under different prompts.
+
+    Returns dicts with keys: name, content, prompt, expected_class,
+    irreducible_reason (only on the irreducible track), pii_notes. The caller
+    wraps `prompt` + `content` into a ChatMessage.
     """
     available = ensure_downloaded()
     cases = []
 
     for filename, path in available.items():
         info = DOCUMENTS[filename]
-        text = path.read_text(encoding="utf-8")
+        text = _strip_edgar_header(path.read_text(encoding="utf-8"))
 
         if max_chars and len(text) > max_chars:
             cut = text[:max_chars].rsplit("\n", 1)[0]
@@ -232,9 +306,22 @@ def load_test_cases(max_chars: int = 4000) -> list[dict]:
         cases.append({
             "name": f"[EDGAR] {info['description']}",
             "content": text,
-            "prompt_prefix": prefix,
+            "prompt": prefix,
+            "expected_class": "reducible",
             "pii_notes": info["pii_notes"],
         })
+
+        subject = _SUBJECTS.get(filename)
+        if subject:
+            name, org = subject
+            cases.append({
+                "name": f"[EDGAR·ID] {name} background diligence ({org})",
+                "content": text,
+                "prompt": _identity_prompt(name, org),
+                "expected_class": "irreducible",
+                "irreducible_reason": "NAMED_ENTITY_ESSENTIAL",
+                "pii_notes": info["pii_notes"],
+            })
 
     return cases
 

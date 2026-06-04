@@ -26,12 +26,14 @@ def test_validate_response_valid():
         ],
         "context_descriptors": {"SOFTWARE_COMPANY_01": "tech company"},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, descriptors, sensitivity = validate_llm_anonymization_response(raw)
+    entities, descriptors, sensitivity, irreducibility = validate_llm_anonymization_response(raw)
     assert len(entities) == 2
     assert entities[0].action == "replace"
     assert entities[1].action == "keep"
     assert sensitivity == "low"
+    assert irreducibility.irreducible is False
 
 
 def test_validate_response_missing_replacement_for_replace():
@@ -70,8 +72,9 @@ def test_validate_response_allows_duplicate_replacements_for_surface_variants():
         ],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, _, _ = validate_llm_anonymization_response(raw)
+    entities, _, _, _ = validate_llm_anonymization_response(raw)
     assert [entity.replacement for entity in entities] == ["PERSON_01", "PERSON_01"]
 
 
@@ -83,8 +86,9 @@ def test_validate_response_generic_placeholder_term_is_not_leak():
         ],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, _, _ = validate_llm_anonymization_response(raw)
+    entities, _, _, _ = validate_llm_anonymization_response(raw)
     assert entities[0].replacement == "FINTECH_COMPANY_01"
 
 
@@ -96,8 +100,9 @@ def test_validate_response_category_token_echo_not_leak():
         ],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, _, _ = validate_llm_anonymization_response(raw)
+    entities, _, _, _ = validate_llm_anonymization_response(raw)
     assert entities[0].replacement == "PARTIES_01"
 
 
@@ -142,11 +147,17 @@ def test_render_prompt():
     assert '"Jane": "PERSON_01"' in rendered
 
 
-def _make_llm_response(entities_found, context_descriptors=None, sensitivity="low"):
+_REDUCIBLE = {"irreducible": False, "reason": None, "risk": 0.0}
+
+
+def _make_llm_response(
+    entities_found, context_descriptors=None, sensitivity="low", irreducibility=None,
+):
     return json.dumps({
         "entities_found": entities_found,
         "context_descriptors": context_descriptors or {},
         "sensitivity": sensitivity,
+        "irreducibility": irreducibility or _REDUCIBLE,
     })
 
 
@@ -307,8 +318,9 @@ def test_validate_response_short_entity_leak_allowed():
         ],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, _, _ = validate_llm_anonymization_response(raw)
+    entities, _, _, _ = validate_llm_anonymization_response(raw)
     assert entities[0].replacement == "URBAN_ADDRESS_01"
 
 
@@ -330,18 +342,95 @@ def test_validate_response_empty_entities():
         "entities_found": [],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     }
-    entities, descriptors, sensitivity = validate_llm_anonymization_response(raw)
+    entities, descriptors, sensitivity, _ = validate_llm_anonymization_response(raw)
     assert entities == []
     assert sensitivity == "low"
 
 
 def test_validate_response_defaults_missing_fields():
-    raw = {}
-    entities, descriptors, sensitivity = validate_llm_anonymization_response(raw)
+    raw = {"irreducibility": {"irreducible": False, "reason": None, "risk": 0.0}}
+    entities, descriptors, sensitivity, _ = validate_llm_anonymization_response(raw)
     assert entities == []
     assert descriptors == {}
     assert sensitivity == "low"
+
+
+def test_validate_response_missing_irreducibility_raises():
+    raw = {"entities_found": [], "context_descriptors": {}, "sensitivity": "low"}
+    with pytest.raises(ValueError, match="irreducibility object missing"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_irreducibility_missing_key_raises():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+        "irreducibility": {"irreducible": True, "reason": "SMALL_K"},
+    }
+    with pytest.raises(ValueError, match="irreducibility missing keys"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_irreducibility_out_of_enum_reason_raises():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+        "irreducibility": {"irreducible": True, "reason": "BECAUSE", "risk": 0.5},
+    }
+    with pytest.raises(ValueError, match="out of enum"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_irreducible_true_requires_reason():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+        "irreducibility": {"irreducible": True, "reason": None, "risk": 0.5},
+    }
+    with pytest.raises(ValueError, match="reason required when irreducible"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_irreducibility_non_bool_raises():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+        "irreducibility": {"irreducible": "yes", "reason": None, "risk": 0.0},
+    }
+    with pytest.raises(ValueError, match="must be a bool"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_irreducibility_non_number_risk_raises():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": "high"},
+    }
+    with pytest.raises(ValueError, match="must be a number"):
+        validate_llm_anonymization_response(raw)
+
+
+def test_validate_response_parses_irreducible_true():
+    raw = {
+        "entities_found": [],
+        "context_descriptors": {},
+        "sensitivity": "high",
+        "irreducibility": {
+            "irreducible": True, "reason": "NAMED_ENTITY_ESSENTIAL", "risk": 0.9,
+        },
+    }
+    _, _, _, irreducibility = validate_llm_anonymization_response(raw)
+    assert irreducibility.irreducible is True
+    assert irreducibility.reason == "NAMED_ENTITY_ESSENTIAL"
+    assert irreducibility.risk == 0.9
 
 
 def test_build_mapping_all_kept():
@@ -415,6 +504,37 @@ async def test_anonymize_messages_high_sensitivity_propagates():
         result = await anonymize_messages(messages, settings, prompt_template=template)
 
     assert result.sensitivity == "high"
+
+
+async def test_anonymize_messages_irreducibility_merges_max_risk():
+    response_1 = _make_llm_response(
+        [], irreducibility={"irreducible": False, "reason": None, "risk": 0.1},
+    )
+    response_2 = _make_llm_response(
+        [],
+        irreducibility={
+            "irreducible": True, "reason": "NAMED_ENTITY_ESSENTIAL", "risk": 0.8,
+        },
+    )
+
+    messages = [
+        ChatMessage(role="user", content="Hello"),
+        ChatMessage(role="user", content="World"),
+    ]
+
+    template = Path("prompts/anonymize.txt").read_text()
+    settings = Settings(anonymization_mode="llm")
+
+    with patch(
+        "hey_jude.services.anonymizer.call_local_llm",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.side_effect = [response_1, response_2]
+        result = await anonymize_messages(messages, settings, prompt_template=template)
+
+    assert result.irreducibility.irreducible is True
+    assert result.irreducibility.reason == "NAMED_ENTITY_ESSENTIAL"
+    assert result.irreducibility.risk == 0.8
 
 
 def test_guess_matches_original_exact():

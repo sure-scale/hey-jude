@@ -13,6 +13,9 @@ services:
       - LOCAL_LLM_MODEL=qwen3.5:4b
       - EXTERNAL_LLM_MODEL=ollama_chat/qwen3.5:4b
       - EXTERNAL_LLM_API_BASE=http://host.docker.internal:11434
+      - EXTERNAL_LLM_MODEL_SENSITIVE=ollama_chat/qwen3.5:4b
+      - EXTERNAL_LLM_MODEL_SENSITIVE_API_BASE=http://host.docker.internal:11434
+      - IRREDUCIBLE_POLICY=WARN
     depends_on:
       redis:
         condition: service_healthy

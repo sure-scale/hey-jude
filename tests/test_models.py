@@ -8,6 +8,7 @@ from hey_jude.models import (
     DetectedEntity,
     FoundEntity,
     HeyJudeMetadata,
+    IrreducibilityAssessment,
     SafetyNetResult,
     SubstitutionResult,
     Usage,
@@ -100,10 +101,14 @@ def test_substitution_result():
         sanitized_messages=[ChatMessage(role="user", content="Tell me about Pinnacle Systems")],
         sensitivity="low",
         needs_clarification=False,
+        irreducibility=IrreducibilityAssessment(
+            irreducible=False, reason=None, risk=0.0
+        ),
         clarification_question=None,
     )
     assert result.mapping["Microsoft"] == "Pinnacle Systems"
     assert result.reverse_mapping["Pinnacle Systems"] == "Microsoft"
+    assert result.irreducibility.irreducible is False
 
 
 def test_found_entity_replace():
@@ -146,6 +151,9 @@ def test_anonymization_result():
                 reason="real company",
             )
         ],
+        irreducibility=IrreducibilityAssessment(
+            irreducible=False, reason=None, risk=0.0
+        ),
     )
     assert result.mapping["Microsoft"] == "SOFTWARE_COMPANY_01"
     assert len(result.entities_found) == 1

@@ -46,6 +46,9 @@ class HeyJudeMetadata(BaseModel):
     sensitivity: str
     status: str
     document_warnings: list[dict[str, Any]] | None = None
+    irreducible: bool | None = None
+    route_tier: str | None = None
+    policy: str | None = None
 
 
 class ChatCompletionResponse(BaseModel):
@@ -68,6 +71,21 @@ class DetectedEntity:
 
 
 @dataclass
+class IrreducibilityAssessment:
+    """Whether residual re-identification risk can be brought below threshold.
+
+    A claim about the *nature* of the request, independent of whether masking
+    succeeded: some questions require an entity x sensitive-attribute link that
+    singles out an individual, name an essential real entity, or sit in a
+    small-k cohort, and so leak regardless of what is masked.
+    """
+
+    irreducible: bool
+    reason: str | None  # SINGLING_OUT | NAMED_ENTITY_ESSENTIAL | SMALL_K | None
+    risk: float
+
+
+@dataclass
 class SubstitutionResult:
     mapping: dict[str, str]
     reverse_mapping: dict[str, str]
@@ -75,6 +93,7 @@ class SubstitutionResult:
     sanitized_messages: list[ChatMessage]
     sensitivity: str
     needs_clarification: bool
+    irreducibility: IrreducibilityAssessment
     clarification_question: str | None = None
 
 
@@ -95,6 +114,7 @@ class AnonymizationResult:
     sanitized_messages: list[ChatMessage]
     sensitivity: str
     entities_found: list[FoundEntity]
+    irreducibility: IrreducibilityAssessment
 
 
 @dataclass

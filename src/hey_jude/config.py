@@ -23,6 +23,20 @@ class Settings(BaseSettings):
     external_llm_model: str = "ollama_chat/qwen3.5:4b"
     external_llm_api_base: str | None = "http://localhost:11434"
 
+    # In-jurisdiction sovereign destination for irreducible-PII requests. This is
+    # the self-hosted OSS model running on compute not subject to US compulsion;
+    # only the irreducible residue routes here (see irreducible_policy). Defaults
+    # to the same local OSS endpoint so a single-box deployment still routes
+    # sensibly out of the box.
+    external_llm_model_sensitive: str = "ollama_chat/qwen3.5:4b"
+    external_llm_model_sensitive_api_base: str | None = "http://localhost:11434"
+
+    # Policy for requests whose residual re-identification risk cannot be brought
+    # below threshold (irreducible PII). BLOCK refuses; ASK returns a confirmation
+    # round-trip; WARN routes to the sovereign destination and flags it; ALLOW
+    # sends to the US frontier model anyway (explicit opt-in to US jurisdiction).
+    irreducible_policy: Literal["BLOCK", "ASK", "WARN", "ALLOW"] = "WARN"
+
     api_key: str = "sk-heyjude-dev"
 
     presidio_entities: list[str] = Field(

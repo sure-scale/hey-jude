@@ -88,6 +88,9 @@ The defaults work out of the box for most users.
 | `LOCAL_LLM_API_KEY` | *(empty)* | API key for cloud-hosted anonymization models |
 | `EXTERNAL_LLM_MODEL` | `ollama_chat/qwen3.5:4b` | Destination model via LiteLLM |
 | `EXTERNAL_LLM_API_BASE` | `http://localhost:11434` | LiteLLM API base for Ollama |
+| `EXTERNAL_LLM_MODEL_SENSITIVE` | `ollama_chat/qwen3.5:4b` | In-jurisdiction sovereign destination for irreducible-PII requests (self-hosted OSS, not subject to US compulsion) |
+| `EXTERNAL_LLM_MODEL_SENSITIVE_API_BASE` | `http://localhost:11434` | LiteLLM API base for the sovereign destination |
+| `IRREDUCIBLE_POLICY` | `WARN` | Policy for irreducible PII: `BLOCK` refuses, `ASK` returns a confirmation round-trip, `WARN` routes to the sovereign destination and flags it, `ALLOW` sends to the US frontier model anyway. Per-request override via the `X-Heyjude-Policy` header |
 | `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
 | `SAFETY_NET_STRICTNESS` | `warn` | `warn` (auto-fix), `strict` (reject), or `off` |
 | `DOCUMENT_UNREADABLE_ACTION` | `reject` | What to do when an uploaded file has no readable text layer: `reject`, `warn`, or `skip` |

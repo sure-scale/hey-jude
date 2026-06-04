@@ -24,11 +24,32 @@ from hey_jude.services.detector import detect_entities
 from hey_jude.services.documents import DocumentProcessingError, content_to_text
 from hey_jude.services.known_entities import seed_mapping
 from hey_jude.services.mapper import reverse_map, reverse_map_text
-from hey_jude.services.router import route_completion
+from hey_jude.services.router import RouteDecision, select_route, route_completion
 from hey_jude.services.safety_net import safety_net_check
 from hey_jude.services.substitutor import substitute_entities
 
 router = APIRouter()
+
+_POLICY_HEADER = "X-Heyjude-Policy"
+_VALID_POLICIES = {"BLOCK", "ASK", "WARN", "ALLOW"}
+
+
+def _policy_override(request: Request) -> str | None:
+    """Read and validate the per-request policy override header.
+
+    A present-but-unrecognized value is a client error, not something to coerce
+    or ignore — reject it loud.
+    """
+    raw = request.headers.get(_POLICY_HEADER)
+    if raw is None:
+        return None
+    override = raw.strip().upper()
+    if override not in _VALID_POLICIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {_POLICY_HEADER}: {raw!r}",
+        )
+    return override
 
 
 def _extract_api_key(request: Request) -> str | None:
@@ -68,10 +89,10 @@ def _completion_kwargs(body: ChatCompletionRequest) -> dict:
     return kwargs
 
 
-def _route_kwargs(body: ChatCompletionRequest, settings) -> dict:
+def _route_kwargs(body: ChatCompletionRequest, api_base: str | None) -> dict:
     kwargs = _completion_kwargs(body)
-    if settings.external_llm_api_base:
-        kwargs["api_base"] = settings.external_llm_api_base
+    if api_base:
+        kwargs["api_base"] = api_base
     return kwargs
 
 
@@ -332,6 +353,7 @@ async def _gateway_pipeline(
             sanitized_messages=anon_result.sanitized_messages,
             sensitivity=anon_result.sensitivity,
             needs_clarification=False,
+            irreducibility=anon_result.irreducibility,
             clarification_question=None,
         )
         all_entities_count = len([
@@ -399,19 +421,79 @@ async def _gateway_pipeline(
             ),
         )
 
+    # The one egress gate: residual risk x policy decides where this request
+    # goes. Reducible requests are unaffected; only irreducible PII is governed.
+    override = _policy_override(request)
+    decision = select_route(sub_result.irreducibility, settings, override)
+    effective_policy = override or settings.irreducible_policy
+    if record is not None:
+        record.irreducible = sub_result.irreducibility.irreducible
+        record.route_tier = decision.tier
+        record.policy = effective_policy
+        record.provider = decision.model
+        record.model = decision.model
+
+    if decision.action == "block":
+        if record is not None:
+            record.status = "blocked"
+        raise HTTPException(
+            status_code=403,
+            detail="Irreducible PII: request blocked by policy",
+        )
+
+    if decision.action == "ask":
+        if record is not None:
+            record.status = "policy_confirm"
+        await redis_client.store_request(
+            request_id,
+            body.model_dump(exclude={"request_id"}),
+            settings.redis_ttl_seconds,
+        )
+        return ChatCompletionResponse(
+            id=f"heyjude-policy-{request_id}",
+            created=int(time.time()),
+            model=body.model,
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChoiceMessage(
+                        role="assistant",
+                        content=(
+                            "This request carries irreducible PII that cannot be "
+                            "anonymized below the re-identification threshold. "
+                            "Resubmit with an explicit X-Heyjude-Policy header "
+                            "(WARN to route to the in-jurisdiction model, ALLOW to "
+                            "send to the US model anyway, or BLOCK to refuse)."
+                        ),
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            heyjude_metadata=HeyJudeMetadata(
+                request_id=request_id,
+                entities_detected=all_entities_count,
+                sensitivity=sub_result.sensitivity,
+                status="policy_confirm",
+                document_warnings=document_warnings or None,
+                irreducible=sub_result.irreducibility.irreducible,
+                route_tier=decision.tier,
+                policy=effective_policy,
+            ),
+        )
+
     await redis_client.store_mapping(
         request_id,
         sub_result.mapping,
         settings.redis_ttl_seconds,
     )
 
-    completion_kwargs = _route_kwargs(body, settings)
+    completion_kwargs = _route_kwargs(body, decision.api_base)
 
     external_started = time.perf_counter()
     external_response = await route_completion(
         messages=sub_result.sanitized_messages,
         context_descriptors=sub_result.context_descriptors,
-        model=settings.external_llm_model,
+        model=decision.model,
         sensitivity=sub_result.sensitivity,
         **completion_kwargs,
     )
@@ -443,6 +525,9 @@ async def _gateway_pipeline(
         "entities_detected": all_entities_count,
         "sensitivity": sub_result.sensitivity,
         "status": "completed",
+        "irreducible": sub_result.irreducibility.irreducible,
+        "route_tier": decision.tier,
+        "policy": effective_policy,
     }
     if document_warnings:
         metadata["document_warnings"] = document_warnings
