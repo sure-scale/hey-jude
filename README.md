@@ -144,6 +144,8 @@ Hey Jude extracts text from common legal document formats before anonymization, 
 Removing the literal name does not always anonymize. A placeholder like `CLOUD_COMPUTING_COMPANY_01` next to a location, a job title, and a few figures can name the entity as plainly as the original string. Hey Jude defends against this on two levels:
 
 *   **Broad placeholders.** The anonymizer is instructed to pick the broadest category that still supports the task, and to broaden further until a reader cannot name the entity.
+*   **Quasi-identifier generalization.** On high-sensitivity requests, precise non-PII figures that re-identify in combination — an exact revenue, deal value, filing date, headcount, or market share — are generalized to a qualitative band (`$450,000` → "a high-six-figure sum", `March 15, 2024` → "early 2024") that preserves the analytic role without the identifying digits.
+*   **Minimal descriptors.** The context handed to the downstream model is kept to the minimum needed to stay readable ("a company", "a senior executive") and never a distinguishing detail.
 *   **Re-identification critic.** On high-sensitivity requests (`REID_CRITIC_ENABLED`, on by default), one extra local-LLM pass runs a blind re-identification attack over the sanitized output — it sees only the placeholders and descriptors, never the original or the mapping — and broadens the descriptor of any entity it pins down with confidence at or above `REID_CRITIC_THRESHOLD` (default `0.6`). It is bounded to a single call and best-effort: it never fails the request.
 
 The end-to-end benchmark scores this dimension explicitly with a blind attacker; see [BENCHMARKS.md](BENCHMARKS.md).
