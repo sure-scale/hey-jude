@@ -18,7 +18,7 @@ Hey Jude is a drop-in proxy that sits between your app and your LLM provider. It
 
 ```
 You send:   "Draft a demand letter for John Doe v. Goldman Sachs."
-LLM sees:   "Draft a demand letter for PERSON_01 v. INVESTMENT_BANK_01."
+LLM sees:   "Draft a demand letter for PERSON_01 v. COMPANY_01."
 You get back: a letter naming John Doe and Goldman Sachs.
 ```
 
@@ -43,7 +43,7 @@ This is a helper layer for data minimization, not a guarantee. Use it as part of
 ## Why It Exists
 
 *   **Context-aware anonymization:** A local LLM understands that "Goldman Sachs" is PII but "the Purchaser" is a legal term — something regex and NER can't do reliably.
-*   **Semantic placeholders:** `INVESTMENT_BANK_01`, not `ORGANIZATION_01`. The downstream LLM keeps enough context to reason well.
+*   **Semantic placeholders:** typed tokens like `PERSON_01` and `COMPANY_01`, not opaque `ENTITY_01`. The downstream LLM keeps the structural role it needs to reason, while the category stays broad enough not to re-identify (see Inference Resistance).
 *   **Safety net:** Presidio runs after the LLM as a second pass. Configurable as `warn` (auto-fix), `strict` (reject), or `off`.
 *   **Inference resistance:** Stripping the literal name is not enough when context still re-identifies it. A re-identification critic runs a blind attack on the sanitized output and broadens any placeholder that gives the entity away.
 *   **Jurisdiction-aware routing:** Some requests carry PII that cannot be masked below the re-identification threshold. Hey Jude classifies that residue and routes it by policy — including to a sovereign in-jurisdiction model — instead of silently sending it to a US frontier provider.
