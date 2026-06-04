@@ -14,6 +14,7 @@ from hey_jude.services.anonymizer import (
     _parse_critic_guesses,
     _guess_matches_original,
 )
+from hey_jude.services.mapper import reverse_map_text
 
 
 def test_validate_response_valid():
@@ -134,6 +135,33 @@ def test_build_mapping_from_entities():
         "California": "US_WEST_COAST",
     }
     assert "Purchaser" not in mapping
+
+
+def test_readme_intro_example_roundtrip():
+    """The README intro promise: names get broad placeholders, a precise figure
+    is generalized to a band on the way out, and all three — including the exact
+    figure — are restored on the way back."""
+    entities = [
+        FoundEntity(text="John Doe", entity_type="PERSON",
+                    action="replace", replacement="PERSON_01", reason=""),
+        FoundEntity(text="Goldman Sachs", entity_type="ORGANIZATION",
+                    action="replace", replacement="COMPANY_01", reason=""),
+        FoundEntity(text="$2.4M", entity_type="MONETARY",
+                    action="generalize", replacement="a multi-million-dollar sum",
+                    reason=""),
+    ]
+    mapping = build_mapping_from_entities(entities)
+    # Broad category, not the narrow INVESTMENT_BANK_01 anti-pattern.
+    assert mapping["Goldman Sachs"] == "COMPANY_01"
+    # Generalize value is carried in the mapping alongside the replacements.
+    assert mapping["$2.4M"] == "a multi-million-dollar sum"
+
+    # The band is carried verbatim, so it round-trips back to the exact figure.
+    sanitized = ("Draft a demand letter to COMPANY_01 for a "
+                 "multi-million-dollar sum it owes our client PERSON_01.")
+    restored = reverse_map_text(sanitized, {v: k for k, v in mapping.items()})
+    assert restored == ("Draft a demand letter to Goldman Sachs for "
+                        "$2.4M it owes our client John Doe.")
 
 
 def test_render_prompt():
