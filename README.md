@@ -14,9 +14,15 @@
   <img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-111827?style=flat-square">
 </p>
 
-Hey Jude sits between your app and your LLM provider. It strips PII from prompts before they leave your environment, then restores the original details in the response. Your users see real names; the cloud LLM never does.
+Hey Jude is a drop-in proxy that sits between your app and your LLM provider. It strips PII out of prompts before they leave your environment and restores it in the response — your users see real names, the cloud LLM never does. Point any OpenAI, Anthropic, or Gemini SDK at it and keep your existing code.
 
-It uses a local LLM to understand context — so legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses get replaced with semantic placeholders like `INVESTMENT_BANK_01` or `PERSON_02`. A Presidio-based safety net catches anything the LLM misses.
+```
+You send:   "Draft a demand letter for John Doe v. Goldman Sachs."
+LLM sees:   "Draft a demand letter for PERSON_01 v. INVESTMENT_BANK_01."
+You get back: a letter naming John Doe and Goldman Sachs.
+```
+
+A local LLM does the swap, so it understands context: legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses become semantic placeholders that keep enough meaning for the model to reason well. A Presidio safety net catches anything it misses.
 
 This is a helper layer for data minimization, not a guarantee. Use it as part of a broader confidentiality strategy.
 
@@ -28,8 +34,9 @@ This is a helper layer for data minimization, not a guarantee. Use it as part of
 2. A local LLM analyzes the text and identifies real PII vs. legal/structural terms.
 3. PII gets replaced with semantic placeholders. Legal defined terms are kept.
 4. A Presidio safety net scans the result for anything the LLM missed.
-5. The sanitized prompt is forwarded to your chosen LLM provider.
-6. The response comes back, placeholders are swapped for originals, and your app gets a normal-looking reply.
+5. On high-sensitivity requests, a re-identification critic checks the sanitized text and broadens any placeholder a blind attacker could still pin down.
+6. The request is routed by residual risk: pseudonymized prompts go to your chosen provider; requests whose PII cannot be reduced below the re-identification threshold are handled per your `IRREDUCIBLE_POLICY` (block, ask, route to a sovereign in-jurisdiction model, or allow).
+7. The response comes back, placeholders are swapped for originals, and your app gets a normal-looking reply.
 
 ---
 
@@ -38,6 +45,8 @@ This is a helper layer for data minimization, not a guarantee. Use it as part of
 *   **Context-aware anonymization:** A local LLM understands that "Goldman Sachs" is PII but "the Purchaser" is a legal term — something regex and NER can't do reliably.
 *   **Semantic placeholders:** `INVESTMENT_BANK_01`, not `ORGANIZATION_01`. The downstream LLM keeps enough context to reason well.
 *   **Safety net:** Presidio runs after the LLM as a second pass. Configurable as `warn` (auto-fix), `strict` (reject), or `off`.
+*   **Inference resistance:** Stripping the literal name is not enough when context still re-identifies it. A re-identification critic runs a blind attack on the sanitized output and broadens any placeholder that gives the entity away.
+*   **Jurisdiction-aware routing:** Some requests carry PII that cannot be masked below the re-identification threshold. Hey Jude classifies that residue and routes it by policy — including to a sovereign in-jurisdiction model — instead of silently sending it to a US frontier provider.
 *   **Drop-in API:** Exposes OpenAI, Anthropic, and Gemini-compatible endpoints. Point existing SDKs at the gateway.
 *   **Fully local by default:** Runs without cloud keys using Ollama for both anonymization and demo responses.
 *   **Cloud routing when ready:** Route anonymized prompts to OpenAI, Anthropic, Gemini, Azure, or any LiteLLM-compatible provider.
@@ -93,6 +102,7 @@ The defaults work out of the box for most users.
 | `IRREDUCIBLE_POLICY` | `WARN` | Policy for irreducible PII: `BLOCK` refuses, `ASK` returns a confirmation round-trip, `WARN` routes to the sovereign destination and flags it, `ALLOW` sends to the US frontier model anyway. Per-request override via the `X-Heyjude-Policy` header |
 | `ANONYMIZATION_MODE` | `llm` | `llm` (context-aware) or `mechanical` (NER-only) |
 | `SAFETY_NET_STRICTNESS` | `warn` | `warn` (auto-fix), `strict` (reject), or `off` |
+| `REID_CRITIC_ENABLED` | `true` | Run a blind re-identification pass on high-sensitivity output and broaden placeholders the critic cracks |
 | `DOCUMENT_UNREADABLE_ACTION` | `reject` | What to do when an uploaded file has no readable text layer: `reject`, `warn`, or `skip` |
 | `CUSTOM_RECOGNIZERS_PATH` | *(unset)* | Path to a YAML/JSON file of custom Presidio regex recognizers |
 | `KNOWN_ENTITIES_PATH` | *(unset)* | Path to a YAML/JSON known-entity dictionary |
@@ -128,6 +138,30 @@ Default NER misses the abbreviated, inconsistent names common in legal text ("Ca
 By default an auto-numbered placeholder (e.g. `CLIENT_NAME_01`) is assigned per request. Set `replace_with` on an entry to fix its placeholder so it stays identical across every request.
 
 Hey Jude extracts text from common legal document formats before anonymization, including text PDFs, DOCX, HTML, EML, TXT, Markdown, and RTF. Scanned PDFs, flattened PDFs, and images are not OCRed yet; by default they are rejected so unreadable content is not forwarded without anonymization.
+
+### Inference Resistance
+
+Removing the literal name does not always anonymize. A placeholder like `CLOUD_COMPUTING_COMPANY_01` next to a location, a job title, and a few figures can name the entity as plainly as the original string. Hey Jude defends against this on two levels:
+
+*   **Broad placeholders.** The anonymizer is instructed to pick the broadest category that still supports the task, and to broaden further until a reader cannot name the entity.
+*   **Re-identification critic.** On high-sensitivity requests (`REID_CRITIC_ENABLED`, on by default), one extra local-LLM pass runs a blind re-identification attack over the sanitized output — it sees only the placeholders and descriptors, never the original or the mapping — and broadens the descriptor of any entity it pins down with confidence at or above `REID_CRITIC_THRESHOLD` (default `0.6`). It is bounded to a single call and best-effort: it never fails the request.
+
+The end-to-end benchmark scores this dimension explicitly with a blind attacker; see [BENCHMARKS.md](BENCHMARKS.md).
+
+### Jurisdiction-Aware Routing
+
+Some requests carry PII that cannot be pseudonymized below a meaningful re-identification threshold — quasi-identifiers re-identify, and "singling out" survives pseudonymization. Sending that residue to a US frontier provider is the wrong default under a CLOUD Act / FISA 702 threat model (lawful compulsion of a US provider, not a breach).
+
+The anonymizer classifies whether a request is **irreducible** independently of whether masking succeeded. `IRREDUCIBLE_POLICY` then decides what happens:
+
+| Policy | Behavior |
+|--------|----------|
+| `BLOCK` | Refuse the request (403) before any egress |
+| `ASK` | Return a confirmation round-trip before routing |
+| `WARN` (default) | Route to the sovereign in-jurisdiction destination (`EXTERNAL_LLM_MODEL_SENSITIVE`) and flag it |
+| `ALLOW` | Send to the US frontier model anyway |
+
+Reducible requests route exactly as before — sensitivity alone never diverts. Only an irreducible classification triggers the sovereign path. Override per request with the `X-Heyjude-Policy` header (invalid values return 400). The chosen `route_tier` and the `irreducible` flag are recorded in the audit log, so any silent-US-egress is auditable after the fact. Note that Azure OpenAI and AWS Bedrock are **not** sovereign tiers — the CLOUD Act reaches the US parent regardless of the residency region.
 
 ### Audit Logging
 
@@ -226,6 +260,8 @@ GEMINI_API_KEY=your-key python3 tests/e2e/test_gemini_anonymization.py
 ```
 
 The test auto-downloads public-domain legal documents from SEC EDGAR on first run (NDAs, employment agreements, settlement agreements, etc.) and uses them alongside inline test cases. Downloaded documents are cached locally and gitignored.
+
+Beyond literal-leak checks, the harness runs a blind re-identification attacker, a utility-preservation judge, and a two-track score that separates reducible from irreducible requests. Headline results and methodology are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 
@@ -328,6 +364,14 @@ const response = await client.messages.create({
 });
 console.log(response.content[0].text);
 ```
+
+---
+
+## Contributing & Security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the no-edge-case / fail-loud law, and PR conventions. Use synthetic data only in issues, tests, and PRs — never real PII, secrets, or keys.
+
+Report suspected vulnerabilities or PII leaks privately via a GitHub security advisory, not a public issue. See [SECURITY.md](SECURITY.md).
 
 ---
 
