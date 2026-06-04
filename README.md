@@ -14,9 +14,15 @@
   <img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-111827?style=flat-square">
 </p>
 
-Hey Jude sits between your app and your LLM provider. It strips PII from prompts before they leave your environment, then restores the original details in the response. Your users see real names; the cloud LLM never does.
+Hey Jude is a drop-in proxy that sits between your app and your LLM provider. It strips PII out of prompts before they leave your environment and restores it in the response — your users see real names, the cloud LLM never does. Point any OpenAI, Anthropic, or Gemini SDK at it and keep your existing code.
 
-It uses a local LLM to understand context — so legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses get replaced with semantic placeholders like `INVESTMENT_BANK_01` or `PERSON_02`. A Presidio-based safety net catches anything the LLM misses.
+```
+You send:   "Draft a demand letter for John Doe v. Goldman Sachs."
+LLM sees:   "Draft a demand letter for PERSON_01 v. INVESTMENT_BANK_01."
+You get back: a letter naming John Doe and Goldman Sachs.
+```
+
+A local LLM does the swap, so it understands context: legal defined terms like "the Purchaser" stay intact while real names, emails, and addresses become semantic placeholders that keep enough meaning for the model to reason well. A Presidio safety net catches anything it misses.
 
 This is a helper layer for data minimization, not a guarantee. Use it as part of a broader confidentiality strategy.
 
