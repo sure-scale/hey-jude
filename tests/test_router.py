@@ -1,9 +1,81 @@
 import pytest
-from hey_jude.models import ChatMessage
+from hey_jude.config import Settings
+from hey_jude.models import ChatMessage, IrreducibilityAssessment
 from hey_jude.services.router import (
+    IN_JURISDICTION_SENSITIVE,
+    SOVEREIGN_TIERS,
+    US_PSEUDONYMIZED,
     _build_messages_with_preamble,
     _descriptor_is_redundant,
+    select_route,
 )
+
+
+def _settings(**overrides):
+    return Settings(
+        external_llm_model="us-frontier",
+        external_llm_api_base="https://us.example",
+        external_llm_model_sensitive="sovereign-oss",
+        external_llm_model_sensitive_api_base="http://localhost:11434",
+        **overrides,
+    )
+
+
+_REDUCIBLE = IrreducibilityAssessment(irreducible=False, reason=None, risk=0.1)
+_IRREDUCIBLE = IrreducibilityAssessment(
+    irreducible=True, reason="NAMED_ENTITY_ESSENTIAL", risk=0.9
+)
+
+
+def test_sovereign_tiers_definition():
+    assert IN_JURISDICTION_SENSITIVE in SOVEREIGN_TIERS
+    assert US_PSEUDONYMIZED not in SOVEREIGN_TIERS
+
+
+def test_reducible_routes_to_us_frontier():
+    decision = select_route(_REDUCIBLE, _settings(irreducible_policy="BLOCK"))
+    assert decision.model == "us-frontier"
+    assert decision.api_base == "https://us.example"
+    assert decision.tier == US_PSEUDONYMIZED
+    assert decision.tier not in SOVEREIGN_TIERS
+    assert decision.action == "allow"
+
+
+def test_irreducible_block_refuses_egress():
+    decision = select_route(_IRREDUCIBLE, _settings(irreducible_policy="BLOCK"))
+    assert decision.model is None
+    assert decision.tier == IN_JURISDICTION_SENSITIVE
+    assert decision.tier in SOVEREIGN_TIERS
+    assert decision.action == "block"
+
+
+def test_irreducible_allow_opts_into_us():
+    decision = select_route(_IRREDUCIBLE, _settings(irreducible_policy="ALLOW"))
+    assert decision.model == "us-frontier"
+    assert decision.tier == US_PSEUDONYMIZED
+    assert decision.tier not in SOVEREIGN_TIERS
+    assert decision.action == "allow"
+
+
+@pytest.mark.parametrize(
+    "policy,action", [("WARN", "warn"), ("ASK", "ask")]
+)
+def test_irreducible_warn_ask_divert_to_sovereign(policy, action):
+    decision = select_route(_IRREDUCIBLE, _settings(irreducible_policy=policy))
+    assert decision.model == "sovereign-oss"
+    assert decision.api_base == "http://localhost:11434"
+    assert decision.tier == IN_JURISDICTION_SENSITIVE
+    assert decision.tier in SOVEREIGN_TIERS
+    assert decision.action == action
+
+
+def test_override_supersedes_settings_policy():
+    # Settings say ALLOW (would egress to US), header override forces BLOCK.
+    decision = select_route(
+        _IRREDUCIBLE, _settings(irreducible_policy="ALLOW"), override="BLOCK"
+    )
+    assert decision.model is None
+    assert decision.action == "block"
 
 
 def test_preamble_injected_as_system_message():

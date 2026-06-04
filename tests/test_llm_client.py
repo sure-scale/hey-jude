@@ -61,3 +61,15 @@ async def test_call_local_llm_openai_compatible(httpx_mock):
         Settings(local_llm_url="http://localhost:8080/v1"),
     )
     assert result == '{"result": "ok"}'
+
+
+async def test_call_local_llm_empty_completion_raises(httpx_mock):
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": None, "reasoning_content": None}}]},
+    )
+    with pytest.raises(ValueError, match="empty completion"):
+        await call_local_llm(
+            "test prompt",
+            Settings(local_llm_url="http://localhost:8080/v1"),
+        )

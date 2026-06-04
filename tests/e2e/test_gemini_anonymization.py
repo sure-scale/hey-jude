@@ -31,6 +31,7 @@ from hey_jude.config import Settings
 from hey_jude.models import ChatMessage
 from hey_jude.services.anonymizer import anonymize_messages
 from hey_jude.services.known_entities import load_known_entities, seed_mapping
+from hey_jude.services.router import SOVEREIGN_TIERS, select_route
 
 from fixtures.legal_docs.download import load_test_cases
 
@@ -374,28 +375,53 @@ def _normalize_tokens(value: str) -> set[str]:
     return {w for w in words if len(w) > 1 and w not in _INFERENCE_STOPWORDS}
 
 
+# Tokens too common to constitute a re-identification on their own: calendar
+# months, and the ubiquitous default incorporation states / exchanges that
+# attach to most US filings. A guess overlapping the original ONLY on these (or
+# on bare numbers — a shared year, day, or percentage) has NOT named the entity;
+# crediting it inflates the re-id rate with coincidence. (Observed: a guess of
+# the wrong company — Lordstown — counted against a Euramax placeholder purely
+# on shared "august"/"Delaware".) Distinctive name tokens are unaffected, so
+# real hits — Microsoft, Walmart, Society Pass, Implant Sciences — still match.
+_LOW_ENTROPY_TOKENS = {
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "delaware", "nevada", "nasdaq", "nyse",
+}
+
+
+def _distinctive_tokens(value: str) -> set[str]:
+    """Identity-bearing tokens: drop stopwords (via _normalize_tokens), bare
+    numbers, and low-entropy calendar/jurisdiction defaults."""
+    return {
+        t for t in _normalize_tokens(value)
+        if not t.isdigit() and t not in _LOW_ENTROPY_TOKENS
+    }
+
+
 def _guess_matches_original(guess: str, original: str) -> bool:
     """True if the attacker's guess plausibly identifies the real entity.
 
-    Matches on normalized-substring either direction, or significant shared
+    Matches on normalized-substring either direction, or shared distinctive
     tokens, so "Microsoft Corp" matches "Microsoft" and "Goldman Sachs" matches
-    "Goldman Sachs Group, Inc." without rewarding generic-word overlap.
+    "Goldman Sachs Group, Inc." A match requires at least one identity-bearing
+    token in common — a coincidental shared month, year, or default state of
+    incorporation does not count as naming the entity.
     """
     if not guess or guess.strip().casefold() in {"unknown", "n/a", ""}:
         return False
 
     g_norm = re.sub(r"[^a-z0-9]", "", guess.casefold())
     o_norm = re.sub(r"[^a-z0-9]", "", original.casefold())
-    # Substring either direction, but the *contained* string must be long enough
-    # that the overlap is meaningful — guards against a stray "Inc"/"Corp" guess
-    # matching any company original. Short acronyms fall through to the token check.
-    if len(o_norm) >= 4 and o_norm in g_norm:
+    # Substring either direction, but the *contained* string must carry a
+    # distinctive token — guards against a stray "Inc"/"Corp" guess, a bare
+    # year, or a "Delaware" matching any same-state original.
+    if len(o_norm) >= 4 and o_norm in g_norm and _distinctive_tokens(original):
         return True
-    if len(g_norm) >= 4 and g_norm in o_norm:
+    if len(g_norm) >= 4 and g_norm in o_norm and _distinctive_tokens(guess):
         return True
 
-    g_tokens, o_tokens = _normalize_tokens(guess), _normalize_tokens(original)
-    return bool(g_tokens & o_tokens)
+    return bool(_distinctive_tokens(guess) & _distinctive_tokens(original))
 
 
 def _parse_guesses(raw: str) -> list[dict]:
@@ -932,7 +958,32 @@ async def run_test_case(
     # literal string survived — fail the case the same as a plaintext leak.
     inference_leak = bool(inference_result and inference_result.get("reidentified"))
 
-    if leak_found:
+    # The one egress gate, evaluated for the benchmark exactly as the gateway
+    # evaluates it: given the pipeline's irreducibility assessment, where would
+    # this request route under the configured policy?
+    decision = select_route(result.irreducibility, settings)
+    detected_irreducible = result.irreducibility.irreducible
+    sovereign_routed = decision.tier in SOVEREIGN_TIERS
+    expected_class = test_case.get("expected_class", "reducible")
+
+    print(
+        f"  CLASSIFY: expected={expected_class} detected_irreducible="
+        f"{detected_irreducible} route_tier={decision.tier}"
+    )
+
+    if expected_class == "irreducible":
+        # Re-id is the theoretical floor here, not a failure. Success is the
+        # pipeline RECOGNIZING irreducibility and routing it per policy.
+        if not detected_irreducible:
+            status = "fail"
+            print("  RESULT: FAIL (silent mishandle — irreducible treated as reducible)")
+        elif sovereign_routed:
+            status = "pass"
+            print("  RESULT: PASS (irreducible recognized + routed in-jurisdiction)")
+        else:
+            status = "warn"
+            print("  RESULT: WARN (irreducible flagged but not sovereign-routed)")
+    elif leak_found:
         status = "fail"
         print(f"  RESULT: FAIL (literal leak in output)")
     elif partial_leaks:
@@ -957,6 +1008,10 @@ async def run_test_case(
     return {
         "name": name,
         "status": status,
+        "expected_class": expected_class,
+        "detected_irreducible": detected_irreducible,
+        "route_tier": decision.tier,
+        "sovereign_routed": sovereign_routed,
         "mapping_count": len(result.mapping),
         "entities_count": len(result.entities_found),
         "destination_ok": dest["ok"],
@@ -1000,20 +1055,30 @@ async def main():
     prompt_path = Path(__file__).resolve().parent.parent.parent / "prompts" / "anonymize.txt"
     template = prompt_path.read_text()
 
-    # Load EDGAR documents (auto-download if needed)
+    # Load EDGAR documents (auto-download if needed). Each real document is
+    # served on BOTH tracks: a "review this agreement" prompt (reducible —
+    # masking the names answers it) and, where the document names a specific
+    # individual, an identity-essential prompt about that real person
+    # (irreducible — masking destroys the task). The ground-truth class comes
+    # from the PROMPT, asserted from the nature of the request, never relabelled
+    # from whether anonymization happened to fail.
     print("Loading SEC EDGAR test documents (auto-downloading if needed)...")
     edgar_cases = load_test_cases(max_chars=4000)
     for case in edgar_cases:
-        LEGAL_TEXTS.append({
+        entry = {
             "name": case["name"],
+            "expected_class": case["expected_class"],
             "messages": [
                 ChatMessage(
                     role="user",
-                    content=f"{case['prompt_prefix']}\n\n{case['content']}",
+                    content=f"{case['prompt']}\n\n{case['content']}",
                 ),
             ],
-        })
-    print(f"Loaded {len(edgar_cases)} EDGAR documents, {len(LEGAL_TEXTS)} total test cases\n")
+        }
+        if "irreducible_reason" in case:
+            entry["irreducible_reason"] = case["irreducible_reason"]
+        LEGAL_TEXTS.append(entry)
+    print(f"Loaded {len(edgar_cases)} EDGAR cases, {len(LEGAL_TEXTS)} total test cases\n")
 
     # Run all test cases with cooldown between each
     results = []
@@ -1059,6 +1124,57 @@ async def main():
 
     print()
     print(f"  {passed} passed, {warned} warned, {failed} failed, {errored} errors — {len(results)} total")
+
+    # --- Two-track scoring ---------------------------------------------------
+    # A single pass-rate is mathematically capped while the corpus contains
+    # irreducible cases (they cannot be made non-reconstructable). Score the two
+    # classes on their own axes and surface the silent-mishandle count — the
+    # benchmark expression of the firm's fear: a sensitive request that should
+    # have gone sovereign but didn't.
+    scored = [r for r in results if r["status"] != "error"]
+    reducible = [r for r in scored if r.get("expected_class") == "reducible"]
+    irreducible = [r for r in scored if r.get("expected_class") == "irreducible"]
+
+    red_pass = sum(1 for r in reducible if r["status"] == "pass")
+    irr_pass = sum(1 for r in irreducible if r["status"] == "pass")
+    silent_mishandle = [
+        r for r in irreducible if not r.get("detected_irreducible")
+    ]
+    detected = sum(1 for r in irreducible if r.get("detected_irreducible"))
+    silent_us_egress = [
+        r for r in irreducible if not r.get("sovereign_routed")
+    ]
+    over_flagged = [r for r in reducible if r.get("detected_irreducible")]
+
+    print_separator()
+    print("  TWO-TRACK SCORING")
+    if reducible:
+        print(
+            f"    Reducible track:   {red_pass}/{len(reducible)} pass "
+            f"({red_pass / len(reducible) * 100:.0f}%)"
+        )
+    if irreducible:
+        print(
+            f"    Irreducible track: {irr_pass}/{len(irreducible)} pass "
+            f"({irr_pass / len(irreducible) * 100:.0f}%)"
+        )
+        print(
+            f"    Irreducibility detection rate: {detected}/{len(irreducible)} "
+            f"({detected / len(irreducible) * 100:.0f}%)"
+        )
+    print(f"    *** SILENT MISHANDLE (irreducible treated as reducible): "
+          f"{len(silent_mishandle)} ***")
+    if irreducible:
+        print(
+            f"    Silent-US-egress (irreducible routed to a US tier): "
+            f"{len(silent_us_egress)}/{len(irreducible)}"
+        )
+    if reducible:
+        print(
+            f"    Over-flag rate (reducible flagged irreducible): "
+            f"{len(over_flagged)}/{len(reducible)} "
+            f"({len(over_flagged) / len(reducible) * 100:.0f}%)"
+        )
 
     # Aggregate eval scores
     eval_scores = [
@@ -1119,6 +1235,18 @@ async def main():
         )
     if util_scores:
         print(f"    Utility:    {avg_util * 10:.0f}%")
+    if reducible:
+        print(
+            f"    Reducible track:   {red_pass}/{len(reducible)} "
+            f"({red_pass / len(reducible) * 100:.0f}%)"
+        )
+    if irreducible:
+        print(
+            f"    Irreducible track: {irr_pass}/{len(irreducible)} "
+            f"({irr_pass / len(irreducible) * 100:.0f}%), "
+            f"detection {detected / len(irreducible) * 100:.0f}%"
+        )
+    print(f"    Silent mishandle:  {len(silent_mishandle)}")
     print(
         f"    Result:     {passed}/{len(results)} passed "
         f"({passed / len(results) * 100:.0f}%), {failed} failed, {errored} errored"

@@ -69,6 +69,21 @@ Rules:
     "$450,000" → "a high-six-figure sum" (NOT "approximately $450,000"),
     "$2.1 billion" → "a multi-billion-dollar amount", "March 15, 2024" → "in
     early 2024". Preserve the quantity's analytic role; do not drop it entirely.
+11. Assess irreducibility. Independently of whether your masking succeeds, judge
+    whether the REQUEST ITSELF can ever be answered without leaking identity —
+    i.e. whether residual re-identification risk can be brought below threshold
+    at all. Set "irreducible" true when answering requires a link that singles
+    out a real individual or names an essential real entity, so the answer leaks
+    regardless of masking. Choose exactly one reason:
+    - "SINGLING_OUT": the answer pins a fact to one identifiable individual
+      (e.g. "have any of Company X's employees made negligence claims?").
+    - "NAMED_ENTITY_ESSENTIAL": a specific real entity must be named for the
+      answer to be meaningful (e.g. named executives in a public SEC filing).
+    - "SMALL_K": the described cohort is so small that masking still identifies.
+    Set "irreducible" false and "reason" null when masking alone prevents
+    identification. "risk" is your 0.0-1.0 estimate of residual re-id risk. This
+    is a claim about the nature of the request, asserted on its own — never a
+    restatement of how hard the entities were to mask.
 
 Return ONLY a JSON object:
 {
@@ -77,7 +92,10 @@ Return ONLY a JSON object:
      "replacement": "...", "reason": "..."}
   ],
   "context_descriptors": {"PLACEHOLDER": "brief description"},
-  "sensitivity": "low|high"
+  "sensitivity": "low|high",
+  "irreducibility": {"irreducible": true|false,
+                     "reason": "SINGLING_OUT|NAMED_ENTITY_ESSENTIAL|SMALL_K|null",
+                     "risk": 0.0}
 }
 </instructions>
 

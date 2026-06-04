@@ -5,7 +5,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hey_jude.config import Settings
-from hey_jude.models import ChatMessage, DetectedEntity, SubstitutionResult
+from hey_jude.models import (
+    ChatMessage,
+    DetectedEntity,
+    IrreducibilityAssessment,
+    SubstitutionResult,
+)
 from hey_jude.services.llm_client import (
     call_local_llm as _call_local_llm,
     parse_llm_response as _parse_llm_response,
@@ -316,5 +321,10 @@ async def substitute_entities(
         sanitized_messages=sanitized_messages,
         sensitivity=sensitivity,
         needs_clarification=needs_clarification,
+        # Mechanical (Presidio) mode makes no irreducibility judgment — that is an
+        # LLM-mode classification. Assert nothing rather than guess.
+        irreducibility=IrreducibilityAssessment(
+            irreducible=False, reason=None, risk=0.0
+        ),
         clarification_question=clarification_question,
     )

@@ -128,4 +128,20 @@ SUMMARY: {passed}/{total} cases evaluated
   Overall Average: {avg}/10
 ```
 
-Flag any case scoring below 6 on any criterion as needing attention. Treat any case with a re-identification at confidence ≥ 0.6 as a failure regardless of its other scores.
+Flag any case scoring below 6 on any criterion as needing attention.
+
+## Two-track scoring
+
+The anonymizer JSON now carries an `irreducibility` object
+(`{irreducible, reason, risk}`). Branch the verdict on the case's ground-truth
+class — EDGAR named-executive filings are **irreducible**
+(`NAMED_ENTITY_ESSENTIAL`); the curated/adversarial cases are **reducible**:
+
+- **Reducible** → a re-identification at confidence ≥ 0.6 is a failure, as above.
+- **Irreducible** → re-id is the expected floor, not a failure. Success = the
+  anonymizer **flagged** `irreducible: true`. The failure mode is the **silent
+  mishandle**: an irreducible case the anonymizer reported as reducible.
+
+Report a **reducible pass-rate**, an **irreducible detection rate**, and a
+headline **silent-mishandle count** alongside the averages above. Do not relabel
+a case as irreducible because it failed — the class is asserted from the source.

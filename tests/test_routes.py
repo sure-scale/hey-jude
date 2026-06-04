@@ -11,8 +11,11 @@ from hey_jude.models import (
     ChatMessage,
     DetectedEntity,
     FoundEntity,
+    IrreducibilityAssessment,
     SubstitutionResult,
 )
+
+_REDUCIBLE = IrreducibilityAssessment(irreducible=False, reason=None, risk=0.0)
 
 
 @pytest.fixture
@@ -531,6 +534,7 @@ async def test_tool_call_arguments_are_deanonymized(client, app):
         ],
         sensitivity="low",
         needs_clarification=False,
+        irreducibility=_REDUCIBLE,
         clarification_question=None,
     )
 
@@ -889,6 +893,7 @@ async def test_reverse_mapping_uses_redis_and_returns_504_when_mapping_missing(c
         ],
         sensitivity="low",
         needs_clarification=False,
+        irreducibility=_REDUCIBLE,
         clarification_question=None,
     )
 
@@ -980,6 +985,7 @@ async def test_clarification_followup_retrieves_original_context(client, app):
         sanitized_messages=[],
         sensitivity="high",
         needs_clarification=True,
+        irreducibility=_REDUCIBLE,
         clarification_question="Which dispute do you mean?",
     )
     completed_result = SubstitutionResult(
@@ -992,6 +998,7 @@ async def test_clarification_followup_retrieves_original_context(client, app):
         ],
         sensitivity="high",
         needs_clarification=False,
+        irreducibility=_REDUCIBLE,
         clarification_question=None,
     )
 
@@ -1068,6 +1075,7 @@ async def test_llm_mode_anonymization_pipeline(client, app):
         ],
         "context_descriptors": {"SOFTWARE_COMPANY_01": "tech company"},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     })
 
     with patch(
@@ -1123,6 +1131,7 @@ async def test_llm_mode_strict_safety_net_blocks(client, app):
         "entities_found": [],
         "context_descriptors": {},
         "sensitivity": "low",
+        "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
     })
 
     with patch(
@@ -1291,6 +1300,7 @@ async def test_known_entity_seeds_llm_mode_mapping(client, app):
             "entities_found": [],
             "context_descriptors": {},
             "sensitivity": "low",
+            "irreducibility": {"irreducible": False, "reason": None, "risk": 0.0},
         })
         mock_safety.return_value = SafetyNetResult(
             passed=True, leaked_entities=[], auto_replaced=0
@@ -1365,6 +1375,7 @@ async def test_audit_record_written_on_success(tmp_path):
                 sanitized_messages=[ChatMessage(role="user", content="hi")],
                 sensitivity="low",
                 needs_clarification=False,
+                irreducibility=_REDUCIBLE,
                 clarification_question=None,
             )
             mock_route.return_value = {
@@ -1486,6 +1497,7 @@ async def test_audit_records_per_entity_decisions_in_llm_mode(tmp_path):
                         reason="generic defined term",
                     ),
                 ],
+                irreducibility=_REDUCIBLE,
             )
             mock_route.return_value = {
                 "choices": [
@@ -1513,3 +1525,122 @@ async def test_audit_records_per_entity_decisions_in_llm_mode(tmp_path):
         {"entity_type": "MISC", "action": "keep", "reason": "generic defined term"},
     ]
     assert "Acme Corp" not in json.dumps(record["decisions"])
+
+
+def _llm_gateway_app(app, irreducible):
+    app.state.redis_client = MemoryRedis()
+    app.state.settings.anonymization_mode = "llm"
+    app.state.settings.safety_net_strictness = "off"
+    app.state.settings.external_llm_model = "us-frontier"
+    app.state.settings.external_llm_model_sensitive = "sovereign-oss"
+    assessment = (
+        IrreducibilityAssessment(
+            irreducible=True, reason="NAMED_ENTITY_ESSENTIAL", risk=0.9
+        )
+        if irreducible
+        else _REDUCIBLE
+    )
+    return AnonymizationResult(
+        mapping={"Jane Doe": "PERSON_01"},
+        reverse_mapping={"PERSON_01": "Jane Doe"},
+        context_descriptors={},
+        sanitized_messages=[ChatMessage(role="user", content="PERSON_01 matter")],
+        sensitivity="high" if irreducible else "low",
+        entities_found=[
+            FoundEntity(
+                text="Jane Doe", entity_type="PERSON", action="replace",
+                replacement="PERSON_01", reason="named executive",
+            )
+        ],
+        irreducibility=assessment,
+    )
+
+
+async def test_irreducible_block_returns_403_no_egress(client, app):
+    anon_result = _llm_gateway_app(app, irreducible=True)
+    with patch(
+        "hey_jude.routes.anonymize_messages", new_callable=AsyncMock
+    ) as mock_anon, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_anon.return_value = anon_result
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o",
+                  "messages": [{"role": "user", "content": "Jane Doe matter"}]},
+            headers={"X-API-Key": "sk-test-key", "X-Heyjude-Policy": "BLOCK"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Irreducible PII: request blocked by policy"
+    mock_route.assert_not_awaited()
+
+
+async def test_irreducible_warn_routes_to_sovereign_model(client, app):
+    anon_result = _llm_gateway_app(app, irreducible=True)
+    with patch(
+        "hey_jude.routes.anonymize_messages", new_callable=AsyncMock
+    ) as mock_anon, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_anon.return_value = anon_result
+        mock_route.return_value = {
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"},
+                 "finish_reason": "stop"}
+            ]
+        }
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o",
+                  "messages": [{"role": "user", "content": "Jane Doe matter"}]},
+            headers={"X-API-Key": "sk-test-key", "X-Heyjude-Policy": "WARN"},
+        )
+    assert resp.status_code == 200
+    assert mock_route.await_args.kwargs["model"] == "sovereign-oss"
+    meta = resp.json()["heyjude_metadata"]
+    assert meta["irreducible"] is True
+    assert meta["route_tier"] == "in-jurisdiction-sensitive"
+    assert meta["policy"] == "WARN"
+
+
+async def test_reducible_routes_to_us_model(client, app):
+    anon_result = _llm_gateway_app(app, irreducible=False)
+    with patch(
+        "hey_jude.routes.anonymize_messages", new_callable=AsyncMock
+    ) as mock_anon, patch(
+        "hey_jude.routes.route_completion", new_callable=AsyncMock
+    ) as mock_route:
+        mock_anon.return_value = anon_result
+        mock_route.return_value = {
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"},
+                 "finish_reason": "stop"}
+            ]
+        }
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o",
+                  "messages": [{"role": "user", "content": "Jane Doe matter"}]},
+            headers={"X-API-Key": "sk-test-key"},
+        )
+    assert resp.status_code == 200
+    assert mock_route.await_args.kwargs["model"] == "us-frontier"
+    meta = resp.json()["heyjude_metadata"]
+    assert meta["irreducible"] is False
+    assert meta["route_tier"] == "us-ok-pseudonymized"
+
+
+async def test_invalid_policy_header_returns_400(client, app):
+    anon_result = _llm_gateway_app(app, irreducible=False)
+    with patch(
+        "hey_jude.routes.anonymize_messages", new_callable=AsyncMock
+    ) as mock_anon:
+        mock_anon.return_value = anon_result
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o",
+                  "messages": [{"role": "user", "content": "Jane Doe matter"}]},
+            headers={"X-API-Key": "sk-test-key", "X-Heyjude-Policy": "MAYBE"},
+        )
+    assert resp.status_code == 400
+    assert "Invalid X-Heyjude-Policy" in resp.json()["detail"]

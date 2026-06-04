@@ -7,7 +7,10 @@ from hey_jude.models import (
     AnonymizationResult,
     ChatMessage,
     FoundEntity,
+    IrreducibilityAssessment,
 )
+
+_IRREDUCIBILITY_REASONS = {"SINGLING_OUT", "NAMED_ENTITY_ESSENTIAL", "SMALL_K"}
 from hey_jude.services.llm_client import call_local_llm, parse_llm_response
 from hey_jude.services.text import (
     apply_mapping_to_text,
@@ -54,9 +57,38 @@ def _replacement_leaks_original(original: str, replacement: str) -> bool:
     return original.strip().casefold() in replacement.casefold()
 
 
+def _parse_irreducibility(parsed: dict) -> IrreducibilityAssessment:
+    """Read the irreducibility assessment, failing loud on a malformed contract.
+
+    The prompt states the contract once; a response that omits the object or any
+    of its keys, or carries an out-of-enum reason, is a contract violation, not
+    something to paper over with a default.
+    """
+    raw = parsed.get("irreducibility")
+    if not isinstance(raw, dict):
+        raise ValueError(f"irreducibility object missing or not an object: {raw!r}")
+    missing = {"irreducible", "reason", "risk"} - raw.keys()
+    if missing:
+        raise ValueError(f"irreducibility missing keys: {sorted(missing)}")
+    irreducible = raw["irreducible"]
+    reason = raw["reason"]
+    risk = raw["risk"]
+    if not isinstance(irreducible, bool):
+        raise ValueError(f"irreducibility.irreducible must be a bool, got {irreducible!r}")
+    if reason is not None and reason not in _IRREDUCIBILITY_REASONS:
+        raise ValueError(f"irreducibility.reason out of enum: {reason!r}")
+    if irreducible and reason is None:
+        raise ValueError("irreducibility.reason required when irreducible is true")
+    if not isinstance(risk, (int, float)) or isinstance(risk, bool):
+        raise ValueError(f"irreducibility.risk must be a number, got {risk!r}")
+    return IrreducibilityAssessment(
+        irreducible=irreducible, reason=reason, risk=float(risk)
+    )
+
+
 def validate_llm_anonymization_response(
     parsed: dict,
-) -> tuple[list[FoundEntity], dict[str, str], str]:
+) -> tuple[list[FoundEntity], dict[str, str], str, IrreducibilityAssessment]:
     entities_raw = parsed.get("entities_found", [])
     descriptors = parsed.get("context_descriptors", {})
     sensitivity = parsed.get("sensitivity", "low")
@@ -85,7 +117,22 @@ def validate_llm_anonymization_response(
             reason=item.get("reason"),
         ))
 
-    return entities, descriptors, sensitivity
+    irreducibility = _parse_irreducibility(parsed)
+    return entities, descriptors, sensitivity, irreducibility
+
+
+def _merge_irreducibility(
+    acc: IrreducibilityAssessment, new: IrreducibilityAssessment
+) -> IrreducibilityAssessment:
+    """Combine a per-message assessment into the running request-level one."""
+    irreducible = acc.irreducible or new.irreducible
+    risk = max(acc.risk, new.risk)
+    # Reason comes from whichever irreducible message carries the higher risk.
+    if new.irreducible and (not acc.irreducible or new.risk >= acc.risk):
+        reason = new.reason
+    else:
+        reason = acc.reason
+    return IrreducibilityAssessment(irreducible=irreducible, reason=reason, risk=risk)
 
 
 def build_mapping_from_entities(entities: list[FoundEntity]) -> dict[str, str]:
@@ -240,6 +287,9 @@ async def anonymize_messages(
     all_entities: list[FoundEntity] = []
     all_descriptors: dict[str, str] = {}
     overall_sensitivity = "low"
+    overall_irreducibility = IrreducibilityAssessment(
+        irreducible=False, reason=None, risk=0.0
+    )
     skip_indices: set[int] = set()
 
     for i, msg in enumerate(messages):
@@ -260,7 +310,9 @@ async def anonymize_messages(
             raw = await call_local_llm(prompt, settings)
             try:
                 parsed = parse_llm_response(raw)
-                entities, descriptors, sensitivity = validate_llm_anonymization_response(parsed)
+                entities, descriptors, sensitivity, irreducibility = (
+                    validate_llm_anonymization_response(parsed)
+                )
                 break
             except ValueError as e:
                 last_error = e
@@ -274,6 +326,11 @@ async def anonymize_messages(
         all_descriptors.update(descriptors)
         if sensitivity == "high":
             overall_sensitivity = "high"
+        # A request is irreducible if any message is; carry the max risk seen and
+        # the reason of the highest-risk irreducible message.
+        overall_irreducibility = _merge_irreducibility(
+            overall_irreducibility, irreducibility
+        )
 
     sanitized_messages = []
     for i, msg in enumerate(messages):
@@ -313,4 +370,5 @@ async def anonymize_messages(
         sanitized_messages=sanitized_messages,
         sensitivity=overall_sensitivity,
         entities_found=all_entities,
+        irreducibility=overall_irreducibility,
     )
